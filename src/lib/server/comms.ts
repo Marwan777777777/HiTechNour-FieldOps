@@ -1,15 +1,9 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
+import { requireAdmin } from "./admin-guard";
+import { notifyAndPush } from "./notify";
 import type { Profile } from "./types";
-
-async function requireAdmin(userId: string) {
-  const sql = await getSql();
-  const rows = await sql<Profile>`select * from profiles where user_id = ${userId}`;
-  const p = rows[0];
-  if (!p || p.role !== "admin" || !p.active) throw new Error("FORBIDDEN");
-  return p;
-}
 
 export const loadSurveys = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -137,10 +131,13 @@ export const createAnnouncement = createServerFn({ method: "POST" })
       values (${title}, ${body}, ${context.userId})`;
     const people = await sql<{ user_id: string }>`
       select user_id from profiles where active = true`;
-    for (const p of people) {
-      await sql`insert into notifications (user_id, title, body, kind)
-        values (${p.user_id}, ${title}, ${body.slice(0, 200)}, ${"announcement"})`;
-    }
+    await notifyAndPush(
+      sql,
+      people.map((p) => p.user_id),
+      title,
+      body,
+      "announcement",
+    );
     await sql`insert into activity_logs (user_id, kind, detail)
       values (${context.userId}, ${"announcement"}, ${title})`;
     return { ok: true };

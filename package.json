@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
     "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/auth/gate-identity.test.ts src/lib/geo.test.ts",
+    "test:app": "node --test scripts/checkin-engine.test.mjs && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/auth/gate-identity.test.ts src/lib/geo.test.ts",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
@@ -71,6 +72,7 @@
     "tailwindcss": "^4.3.0",
     "tw-animate-css": "^1.3.4",
     "vaul": "^1.1.2",
+    "web-push": "^3.6.7",
     "zod": "^4.4.0",
     "zustand": "^5.0.0"
   },

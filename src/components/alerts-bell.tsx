@@ -1,12 +1,22 @@
 import { Bell } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Empty, Kicker } from "@/components/chrome";
 import { type Locale, t } from "@/lib/i18n";
 import { loadNotifications, markNotificationsRead } from "@/lib/server/field";
+import { savePushSubscription, vapidPublicKey } from "@/lib/server/push";
+
+function urlBase64ToUint8Array(base64: string) {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const raw = atob((base64 + padding).replace(/-/g, "+").replace(/_/g, "/"));
+  const output = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) output[i] = raw.charCodeAt(i);
+  return output;
+}
 
 export function AlertsBell({ locale, unread }: { locale: Locale; unread: number }) {
   const [open, setOpen] = useState(false);
+  const [pushState, setPushState] = useState<"off" | "on" | "denied">("off");
   const notes = useQuery({
     queryKey: ["htn-notes-bell"],
     queryFn: () => loadNotifications(),
@@ -16,6 +26,35 @@ export function AlertsBell({ locale, unread }: { locale: Locale; unread: number 
     mutationFn: () => markNotificationsRead(),
     onSuccess: () => void notes.refetch(),
   });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission === "denied") setPushState("denied");
+    else if (Notification.permission === "granted") setPushState("on");
+  }, []);
+
+  async function enablePush() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") {
+      setPushState("denied");
+      return;
+    }
+    const reg = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+    const { publicKey } = await vapidPublicKey();
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey),
+    });
+    const json = sub.toJSON();
+    if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return;
+    await savePushSubscription({
+      data: { endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth },
+    });
+    setPushState("on");
+  }
+
   return (
     <div className="relative">
       <button
@@ -39,6 +78,15 @@ export function AlertsBell({ locale, unread }: { locale: Locale; unread: number 
               {t(locale, "markRead")}
             </button>
           </div>
+          {pushState === "on" ? (
+            <p className="mb-2 text-xs text-ok">{t(locale, "pushOn")}</p>
+          ) : pushState === "denied" ? (
+            <p className="mb-2 text-xs text-muted">{t(locale, "pushDenied")}</p>
+          ) : (
+            <button type="button" className="mb-2 text-xs text-muted underline" onClick={() => void enablePush()}>
+              {t(locale, "enablePush")}
+            </button>
+          )}
           {notes.data?.rows.length ? (
             <ul className="grid max-h-72 gap-2 overflow-auto">
               {notes.data.rows.map((n) => (

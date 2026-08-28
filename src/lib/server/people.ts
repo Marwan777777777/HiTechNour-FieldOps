@@ -4,15 +4,8 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
 import { cairoDate } from "@/lib/geo";
+import { requireAdmin } from "./admin-guard";
 import type { Profile } from "./types";
-
-async function requireAdmin(userId: string) {
-  const sql = await getSql();
-  const rows = await sql<Profile>`select * from profiles where user_id = ${userId}`;
-  const p = rows[0];
-  if (!p || p.role !== "admin" || !p.active) throw new Error("FORBIDDEN");
-  return p;
-}
 
 function toAuthEmail(username: string) {
   const value = username.trim().toLowerCase();

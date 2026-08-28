@@ -64,11 +64,16 @@ export function LoginScreen() {
         if (res.error) throw new Error(t(locale, "couldNotCreate"));
       } else {
         const res = await authClient.signIn.email({ email, password });
-        if (res.error) throw new Error(t(locale, "incorrectCreds"));
+        if (res.error) {
+          const msg = String(res.error.message ?? "");
+          if (msg.includes("LOCKED_OUT")) throw new Error(t(locale, "lockedOut"));
+          throw new Error(t(locale, "incorrectCreds"));
+        }
       }
       await navigate({ to: "/" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t(locale, "incorrectCreds"));
+      const raw = err instanceof Error ? err.message : "";
+      setError(raw.includes("LOCKED_OUT") ? t(locale, "lockedOut") : raw || t(locale, "incorrectCreds"));
     } finally {
       setBusy(false);
     }

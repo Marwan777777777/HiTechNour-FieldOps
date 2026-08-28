@@ -63,6 +63,11 @@ function FieldShell({ email, displayName }: { email?: string; displayName?: stri
     localStorage.setItem("htn_locale", locale);
   }, [locale]);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
+    void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+  }, []);
+
   if (boot.isError) {
     return (
       <div className="grid min-h-dvh place-items-center p-6">

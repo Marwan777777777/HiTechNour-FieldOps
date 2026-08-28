@@ -2,15 +2,9 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
 import { getDailyHours, getMonthlyAttendance, overviewRoster } from "./attendance";
+import { requireAdmin } from "./admin-guard";
+import { notifyAndPush } from "./notify";
 import type { Profile, Site } from "./types";
-
-async function requireAdmin(userId: string) {
-  const sql = await getSql();
-  const rows = await sql<Profile>`select * from profiles where user_id = ${userId}`;
-  const p = rows[0];
-  if (!p || p.role !== "admin" || !p.active) throw new Error("FORBIDDEN");
-  return p;
-}
 
 export const adminOverview = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -19,7 +13,7 @@ export const adminOverview = createServerFn({ method: "GET" })
     const sql = await getSql();
     const roster = await overviewRoster(sql);
 
-    const [onSite, flagged, pending, openReports] = await Promise.all([
+    const [onSite, flagged, pending, openReports, pendingLeave] = await Promise.all([
       sql<{
         user_id: string;
         full_name: string;
@@ -41,6 +35,7 @@ export const adminOverview = createServerFn({ method: "GET" })
       sql<{ c: number }>`select count(*)::int as c from profiles
         where role = 'employee' and (active = false or device_approved = false)`,
       sql<{ c: number }>`select count(*)::int as c from reports where status = 'submitted'`,
+      sql<{ c: number }>`select count(*)::int as c from leave_requests where status = 'pending'`,
     ]);
 
     return {
@@ -49,6 +44,7 @@ export const adminOverview = createServerFn({ method: "GET" })
       flagged: flagged[0]?.c ?? 0,
       pending: pending[0]?.c ?? 0,
       openReports: openReports[0]?.c ?? 0,
+      pendingLeave: pendingLeave[0]?.c ?? 0,
     };
   });
 
@@ -210,8 +206,13 @@ export const approveDevice = createServerFn({ method: "POST" })
       where user_id = ${data.userId}
       returning user_id`;
     if (!rows[0]) throw new Error("NOT_FOUND");
-    await sql`insert into notifications (user_id, title, body, kind)
-      values (${data.userId}, ${"Device approved"}, ${"You can now check in from this phone."}, ${"device"})`;
+    await notifyAndPush(
+      sql,
+      [data.userId],
+      "Device approved",
+      "You can now check in from this phone.",
+      "device",
+    );
     await sql`insert into activity_logs (user_id, kind, detail)
       values (${context.userId}, ${"approve_device"}, ${data.userId})`;
     return { ok: true };
@@ -318,8 +319,13 @@ export const saveAssignment = createServerFn({ method: "POST" })
     const sql = await getSql();
     await sql`insert into assignments (user_id, site_id, task, start_date, end_date, assigned_by)
       values (${data.userId}, ${data.siteId}, ${data.task ?? null}, ${data.startDate}::date, ${data.endDate}::date, ${context.userId})`;
-    await sql`insert into notifications (user_id, title, body, kind)
-      values (${data.userId}, ${"New assignment"}, ${data.task || "You have a new site assignment."}, ${"assignment"})`;
+    await notifyAndPush(
+      sql,
+      [data.userId],
+      "New assignment",
+      data.task || "You have a new site assignment.",
+      "assignment",
+    );
     return { ok: true };
   });
 
@@ -377,27 +383,34 @@ export const adminReports = createServerFn({ method: "GET" })
       title: string;
       body: string;
       status: string;
+      kind: string;
+      category: string | null;
+      priority: string;
+      photo_data: string | null;
       full_name: string;
       site_name: string | null;
       created_at: string;
     }>`
-      select r.id, r.title, r.body, r.status, p.full_name, s.name as site_name,
-             r.created_at::text as created_at
+      select r.id, r.title, r.body, r.status, r.kind, r.category, r.priority, r.photo_data,
+             p.full_name, s.name as site_name, r.created_at::text as created_at
       from reports r
       join profiles p on p.user_id = r.user_id
       left join sites s on s.id = r.site_id
-      order by (r.status = 'submitted') desc, r.created_at desc
+      order by (r.status = 'submitted') desc,
+               case r.priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end,
+               r.created_at desc
       limit 80`;
     return { rows };
   });
 
 export const reviewReport = createServerFn({ method: "POST" })
-  .validator((d: { id: number }) => d)
+  .validator((d: { id: number; status?: "reviewed" | "in_progress" | "resolved" }) => d)
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     await requireAdmin(context.userId);
+    const status = data.status ?? "reviewed";
     const sql = await getSql();
-    await sql`update reports set status = 'reviewed', reviewed_by = ${context.userId}, reviewed_at = now()
+    await sql`update reports set status = ${status}, reviewed_by = ${context.userId}, reviewed_at = now()
       where id = ${data.id}`;
     return { ok: true };
   });
@@ -469,6 +482,124 @@ export const exportAttendanceCsv = createServerFn({ method: "GET" })
     );
     return { csv: [header, ...lines].join("\n"), filename: `attendance-${data.from}-to-${data.to}.csv` };
   });
+
+export const exportPayrollCsv = createServerFn({ method: "GET" })
+  .validator((d: { from: string; to: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    await requireAdmin(context.userId);
+    const sql = await getSql();
+    const punches = await sql<{
+      user_id: string;
+      full_name: string;
+      email: string | null;
+      type: string;
+      created_at: string;
+      flagged: boolean;
+    }>`
+      select c.user_id, p.full_name, p.email, c.type, c.created_at::text as created_at, c.flagged
+      from checkins c
+      join profiles p on p.user_id = c.user_id
+      where c.created_at >= ${data.from}::date and c.created_at < (${data.to}::date + interval '1 day')
+      order by p.full_name, c.created_at`;
+    const leaves = await sql<{
+      user_id: string;
+      full_name: string;
+      email: string | null;
+      kind: string;
+      start_date: string;
+      end_date: string;
+    }>`
+      select l.user_id, p.full_name, p.email, l.kind,
+             l.start_date::text as start_date, l.end_date::text as end_date
+      from leave_requests l
+      join profiles p on p.user_id = l.user_id
+      where l.status = 'approved'
+        and l.start_date <= ${data.to}::date
+        and l.end_date >= ${data.from}::date`;
+
+    type DayRow = {
+      worker: string;
+      email: string;
+      date: string;
+      firstIn: string;
+      lastOut: string;
+      hours: number;
+      flagged: number;
+      leave: string;
+    };
+    const byKey = new Map<string, DayRow>();
+    const cairoDay = (iso: string) =>
+      new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo" }).format(new Date(iso));
+
+    for (const p of punches) {
+      const day = cairoDay(p.created_at);
+      const key = `${p.user_id}|${day}`;
+      let row = byKey.get(key);
+      if (!row) {
+        row = {
+          worker: p.full_name,
+          email: p.email ?? "",
+          date: day,
+          firstIn: "",
+          lastOut: "",
+          hours: 0,
+          flagged: 0,
+          leave: "",
+        };
+        byKey.set(key, row);
+      }
+      if (p.type === "check_in" && !row.firstIn) row.firstIn = p.created_at;
+      if (p.type === "check_out") row.lastOut = p.created_at;
+      if (p.flagged) row.flagged += 1;
+    }
+    for (const row of byKey.values()) {
+      if (row.firstIn && row.lastOut) {
+        row.hours = Math.round(((new Date(row.lastOut).getTime() - new Date(row.firstIn).getTime()) / 3_600_000) * 10) / 10;
+      }
+    }
+    for (const lv of leaves) {
+      let cursor = lv.start_date < data.from ? data.from : lv.start_date;
+      const last = lv.end_date > data.to ? data.to : lv.end_date;
+      while (cursor <= last) {
+        const key = `${lv.user_id}|${cursor}`;
+        const existing = byKey.get(key);
+        if (existing) existing.leave = lv.kind;
+        else {
+          byKey.set(key, {
+            worker: lv.full_name,
+            email: lv.email ?? "",
+            date: cursor,
+            firstIn: "",
+            lastOut: "",
+            hours: 0,
+            flagged: 0,
+            leave: lv.kind,
+          });
+        }
+        const d = new Date(`${cursor}T12:00:00Z`);
+        d.setUTCDate(d.getUTCDate() + 1);
+        cursor = d.toISOString().slice(0, 10);
+      }
+    }
+    const header = "worker,email,date,first_in,last_out,hours,flagged_punches,leave";
+    const lines = [...byKey.values()]
+      .sort((a, b) => a.worker.localeCompare(b.worker) || a.date.localeCompare(b.date))
+      .map((r) =>
+        [
+          csvEscape(r.worker),
+          csvEscape(r.email),
+          r.date,
+          r.firstIn,
+          r.lastOut,
+          r.hours,
+          r.flagged,
+          r.leave,
+        ].join(","),
+      );
+    return { csv: [header, ...lines].join("\n"), filename: `payroll-${data.from}-to-${data.to}.csv` };
+  });
+
 
 function csvEscape(value: string) {
   if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;

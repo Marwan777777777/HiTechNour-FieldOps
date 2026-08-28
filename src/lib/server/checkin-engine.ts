@@ -6,6 +6,7 @@ import {
   primaryFlag,
 } from "@/lib/geo";
 import { withTransaction } from "@/lib/db";
+import { approvedLeaveToday } from "./leave";
 import type { Profile, Site } from "./types";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -96,6 +97,11 @@ export async function processCheckin(
       select * from profiles where user_id = ${userId} for update`;
     const user = locked[0];
     if (!user) throw new FieldError("NO_PROFILE", "No profile");
+
+    const onLeave = await approvedLeaveToday(tx, userId);
+    if (onLeave) {
+      throw new FieldError("ON_LEAVE", "You are on approved leave today.");
+    }
 
     const existing = await tx<CheckinResult>`
       select c.id, c.type, c.distance_meters, c.status, c.flagged, c.flag_reason,

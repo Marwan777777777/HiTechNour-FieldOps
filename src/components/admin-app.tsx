@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   MapPin,
   Megaphone,
+  Palmtree,
   ScrollText,
   Sparkles,
   Users,
@@ -25,6 +26,7 @@ import {
   adminReports,
   approveDevice,
   exportAttendanceCsv,
+  exportPayrollCsv,
   forceLogout,
   listFlagged,
   listSites,
@@ -48,6 +50,7 @@ import {
   skillCoverage,
   teamRoster,
 } from "@/lib/server/people";
+import { adminListLeave, reviewLeave } from "@/lib/server/leave";
 import type { HomeData } from "@/lib/server/field";
 import { AdminBroadcast } from "./admin-broadcast";
 import { AdminSchedule } from "./admin-schedule";
@@ -63,6 +66,7 @@ type AdminTab =
   | "sites"
   | "skills"
   | "reports"
+  | "leave"
   | "broadcast"
   | "log"
   | "export"
@@ -76,6 +80,7 @@ const NAV: { id: AdminTab; label: Msg; icon: typeof LayoutDashboard }[] = [
   { id: "sites", label: "sites", icon: MapPin },
   { id: "skills", label: "skills", icon: Sparkles },
   { id: "reports", label: "reports", icon: ClipboardList },
+  { id: "leave", label: "leave", icon: Palmtree },
   { id: "broadcast", label: "broadcast", icon: Megaphone },
   { id: "log", label: "log", icon: ScrollText },
   { id: "export", label: "export", icon: Download },
@@ -142,6 +147,7 @@ export function AdminApp({
           {tab === "sites" ? <Sites locale={locale} /> : null}
           {tab === "skills" ? <Skills locale={locale} /> : null}
           {tab === "reports" ? <Reports locale={locale} /> : null}
+          {tab === "leave" ? <LeaveDesk locale={locale} /> : null}
           {tab === "broadcast" ? <AdminBroadcast locale={locale} /> : null}
           {tab === "log" ? <Log locale={locale} /> : null}
           {tab === "export" ? <ExportTab locale={locale} /> : null}
@@ -164,11 +170,12 @@ function Overview({ locale }: { locale: Locale }) {
         <h1 className="font-display text-2xl font-semibold">{t(locale, "overview")}</h1>
         <p className="mt-1 font-mono text-xs text-muted">{d.today}</p>
       </div>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <Stat label={t(locale, "present")} value={`${d.presentToday}/${d.totalWorkers}`} />
         <Stat label={t(locale, "late")} value={d.lateToday} warn={d.lateToday > 0} />
         <Stat label={t(locale, "absent")} value={d.absentToday} warn={d.absentToday > 0} />
         <Stat label={t(locale, "flaggedQueue")} value={d.flagged} warn={d.flagged > 0} />
+        <Stat label={t(locale, "pendingLeave")} value={d.pendingLeave} warn={d.pendingLeave > 0} />
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel>
@@ -878,23 +885,90 @@ function Reports({ locale }: { locale: Locale }) {
       {rows.map((row) => (
         <Panel key={row.id}>
           <div className="flex items-start justify-between gap-3">
-            <div>
+            <div className="min-w-0">
               <p className="text-sm font-medium">{row.title}</p>
               <p className="mt-1 text-sm text-muted">{row.body}</p>
               <p className="mt-2 font-mono text-xs text-faint">
-                {row.full_name} · {row.site_name ?? "—"} · {row.status}
+                {row.kind} · {row.priority} · {row.category ?? "—"} · {row.full_name} · {row.site_name ?? "—"} · {row.status}
               </p>
+              {row.photo_data ? (
+                <img src={row.photo_data} alt="" className="mt-2 max-h-40 rounded-lg object-cover" />
+              ) : null}
             </div>
-            {row.status === "submitted" ? (
-              <Button
-                variant="outline"
-                onClick={async () => {
-                  await reviewReport({ data: { id: row.id } });
-                  void q.refetch();
-                }}
-              >
-                {t(locale, "review")}
-              </Button>
+            <div className="flex shrink-0 flex-col gap-1">
+              {row.status === "submitted" || row.status === "in_progress" ? (
+                <>
+                  {row.status === "submitted" ? (
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        await reviewReport({ data: { id: row.id, status: "in_progress" } });
+                        void q.refetch();
+                      }}
+                    >
+                      {t(locale, "inProgress")}
+                    </Button>
+                  ) : null}
+                  <Button
+                    variant="outline"
+                    onClick={async () => {
+                      await reviewReport({ data: { id: row.id, status: "resolved" } });
+                      void q.refetch();
+                    }}
+                  >
+                    {t(locale, "resolved")}
+                  </Button>
+                </>
+              ) : null}
+            </div>
+          </div>
+        </Panel>
+      ))}
+    </div>
+  );
+}
+
+function LeaveDesk({ locale }: { locale: Locale }) {
+  const q = useQuery({ queryKey: ["htn-admin-leave"], queryFn: () => adminListLeave() });
+  if (q.isLoading) return <Skeleton className="h-64" />;
+  const rows = q.data?.rows ?? [];
+  if (!rows.length) return <Empty>{t(locale, "noLeave")}</Empty>;
+  return (
+    <div className="grid gap-3">
+      <h1 className="font-display text-2xl font-semibold">{t(locale, "leave")}</h1>
+      {rows.map((row) => (
+        <Panel key={row.id}>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">
+                {row.full_name} · {row.kind}
+              </p>
+              <p className="mt-1 font-mono text-xs text-muted">
+                {row.start_date} → {row.end_date}
+              </p>
+              {row.reason ? <p className="mt-1 text-sm text-muted">{row.reason}</p> : null}
+              <p className="mt-2 font-mono text-xs text-faint">{row.status}</p>
+            </div>
+            {row.status === "pending" ? (
+              <div className="flex gap-2">
+                <Button
+                  onClick={async () => {
+                    await reviewLeave({ data: { id: row.id, status: "approved" } });
+                    void q.refetch();
+                  }}
+                >
+                  {t(locale, "approve")}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    await reviewLeave({ data: { id: row.id, status: "denied" } });
+                    void q.refetch();
+                  }}
+                >
+                  {t(locale, "deny")}
+                </Button>
+              </div>
             ) : null}
           </div>
         </Panel>
@@ -931,17 +1005,22 @@ function ExportTab({ locale }: { locale: Locale }) {
   const today = cairoDate();
   const [from, setFrom] = useState(`${today.slice(0, 8)}01`);
   const [to, setTo] = useState(today);
-  const run = useMutation({
+  function download(csv: string, filename: string) {
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  const punches = useMutation({
     mutationFn: () => exportAttendanceCsv({ data: { from, to } }),
-    onSuccess: (res) => {
-      const blob = new Blob([res.csv], { type: "text/csv" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = res.filename;
-      a.click();
-      URL.revokeObjectURL(url);
-    },
+    onSuccess: (res) => download(res.csv, res.filename),
+  });
+  const payroll = useMutation({
+    mutationFn: () => exportPayrollCsv({ data: { from, to } }),
+    onSuccess: (res) => download(res.csv, res.filename),
   });
   return (
     <Panel className="max-w-md grid gap-3">
@@ -954,8 +1033,11 @@ function ExportTab({ locale }: { locale: Locale }) {
         {t(locale, "dateTo")}
         <input className="mt-1 h-11 w-full rounded-lg border border-line bg-elevated px-3 text-sm" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
       </label>
-      <Button disabled={run.isPending} onClick={() => run.mutate()}>
-        {t(locale, "exportCsv")}
+      <Button disabled={punches.isPending} onClick={() => punches.mutate()}>
+        {t(locale, "exportPunches")}
+      </Button>
+      <Button variant="outline" disabled={payroll.isPending} onClick={() => payroll.mutate()}>
+        {t(locale, "exportPayroll")}
       </Button>
     </Panel>
   );

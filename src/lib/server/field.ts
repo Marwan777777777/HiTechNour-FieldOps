@@ -4,6 +4,7 @@ import { getSql } from "@/lib/db";
 import { cairoDate } from "@/lib/geo";
 import { FieldError, processCheckin } from "./checkin-engine";
 import { getDailyHours, getMonthlyAttendance } from "./attendance";
+import { notifyAndPush } from "./notify";
 import type { AssignmentRow, Profile, Site, TimelineEvent } from "./types";
 
 export type { Profile, Site, TimelineEvent, AssignmentRow };
@@ -182,10 +183,15 @@ export const loadReports = createServerFn({ method: "GET" })
       title: string;
       body: string;
       status: string;
+      kind: string;
+      category: string | null;
+      priority: string;
+      photo_data: string | null;
       site_name: string | null;
       created_at: string;
     }>`
-      select r.id, r.title, r.body, r.status, s.name as site_name, r.created_at::text as created_at
+      select r.id, r.title, r.body, r.status, r.kind, r.category, r.priority, r.photo_data,
+             s.name as site_name, r.created_at::text as created_at
       from reports r left join sites s on s.id = r.site_id
       where r.user_id = ${context.userId}
       order by r.created_at desc limit 50`;
@@ -193,26 +199,50 @@ export const loadReports = createServerFn({ method: "GET" })
   });
 
 export const submitReport = createServerFn({ method: "POST" })
-  .validator((d: { title: string; body: string; siteId?: number | null }) => d)
+  .validator(
+    (d: {
+      title: string;
+      body: string;
+      siteId?: number | null;
+      kind?: "report" | "site_issue";
+      category?: string | null;
+      priority?: "low" | "normal" | "high" | "urgent";
+      photoData?: string | null;
+    }) => d,
+  )
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     const title = data.title.trim();
     const body = data.body.trim();
     if (!title || !body) throw new Error("Title and details are required.");
+    const kind = data.kind === "site_issue" ? "site_issue" : "report";
+    const category = (data.category ?? "").trim().slice(0, 40) || null;
+    const priority = data.priority ?? "normal";
+    if (!["low", "normal", "high", "urgent"].includes(priority)) throw new Error("Invalid priority.");
+    let photo: string | null = null;
+    if (data.photoData) {
+      if (data.photoData.length > 350_000) throw new Error("Photo is too large (max ~250KB).");
+      if (!data.photoData.startsWith("data:image/")) throw new Error("Photo must be an image.");
+      photo = data.photoData;
+    }
     const sql = await getSql();
     const me = await profileOf(context.userId);
     if (!me?.active) throw new Error("ACCOUNT_PENDING");
-    await sql`insert into reports (user_id, site_id, title, body)
-      values (${context.userId}, ${data.siteId ?? null}, ${title}, ${body})`;
+    await sql`insert into reports (user_id, site_id, title, body, kind, category, priority, photo_data)
+      values (${context.userId}, ${data.siteId ?? null}, ${title}, ${body}, ${kind}, ${category}, ${priority}, ${photo})`;
     await sql`insert into activity_logs (user_id, kind, detail)
-      values (${context.userId}, ${"report"}, ${title})`;
+      values (${context.userId}, ${kind}, ${title})`;
     const admins = await sql<{ user_id: string }>`
       select user_id from profiles where role = 'admin' and active = true`;
     const who = me.full_name;
-    for (const a of admins) {
-      await sql`insert into notifications (user_id, title, body, kind)
-        values (${a.user_id}, ${"New field report"}, ${`${who}: ${title}`}, ${"report"})`;
-    }
+    const heading = kind === "site_issue" ? "Site issue" : "New field report";
+    await notifyAndPush(
+      sql,
+      admins.map((a) => a.user_id),
+      heading,
+      `${who}: ${title}`,
+      kind,
+    );
     return { ok: true };
   });
 

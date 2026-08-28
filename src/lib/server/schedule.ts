@@ -1,15 +1,9 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
+import { requireAdmin } from "./admin-guard";
+import { notifyAndPush } from "./notify";
 import type { Profile } from "./types";
-
-async function requireAdmin(userId: string) {
-  const sql = await getSql();
-  const rows = await sql<Profile>`select * from profiles where user_id = ${userId}`;
-  const p = rows[0];
-  if (!p || p.role !== "admin" || !p.active) throw new Error("FORBIDDEN");
-  return p;
-}
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -75,8 +69,7 @@ export const upsertAssignment = createServerFn({ method: "POST" })
       const range =
         data.endDate !== data.startDate ? `${data.startDate} → ${data.endDate}` : data.startDate;
       const body = `You are assigned to ${site[0]?.name ?? "a site"} (${range})${task ? ` · ${task}` : ""}`;
-      await sql`insert into notifications (user_id, title, body, kind)
-        values (${data.userId}, ${"New assignment"}, ${body}, ${"assignment"})`;
+      await notifyAndPush(sql, [data.userId], "New assignment", body, "assignment");
     }
     return { ok: true };
   });
