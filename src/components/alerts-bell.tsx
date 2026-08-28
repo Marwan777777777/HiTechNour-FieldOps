@@ -14,6 +14,50 @@ function urlBase64ToUint8Array(base64: string) {
   return output;
 }
 
+async function subscribePush() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return false;
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") return false;
+  const reg = await navigator.serviceWorker.register("/sw.js");
+  await navigator.serviceWorker.ready;
+  const { publicKey } = await vapidPublicKey();
+  const sub = await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(publicKey),
+  });
+  const json = sub.toJSON();
+  if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return false;
+  await savePushSubscription({
+    data: { endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth },
+  });
+  return true;
+}
+
+export function PushNudge({ locale }: { locale: Locale }) {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission === "default") setShow(true);
+  }, []);
+  if (!show) return null;
+  return (
+    <button
+      type="button"
+      className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-start text-sm text-muted"
+      onClick={() => {
+        void subscribePush().then((ok) => {
+          if (ok) setShow(false);
+          else if (typeof Notification !== "undefined" && Notification.permission !== "default") {
+            setShow(false);
+          }
+        });
+      }}
+    >
+      {t(locale, "pushNudge")}
+    </button>
+  );
+}
+
 export function AlertsBell({ locale, unread }: { locale: Locale; unread: number }) {
   const [open, setOpen] = useState(false);
   const [pushState, setPushState] = useState<"off" | "on" | "denied">("off");
@@ -34,25 +78,8 @@ export function AlertsBell({ locale, unread }: { locale: Locale; unread: number 
   }, []);
 
   async function enablePush() {
-    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
-    const perm = await Notification.requestPermission();
-    if (perm !== "granted") {
-      setPushState("denied");
-      return;
-    }
-    const reg = await navigator.serviceWorker.register("/sw.js");
-    await navigator.serviceWorker.ready;
-    const { publicKey } = await vapidPublicKey();
-    const sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(publicKey),
-    });
-    const json = sub.toJSON();
-    if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return;
-    await savePushSubscription({
-      data: { endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth },
-    });
-    setPushState("on");
+    const ok = await subscribePush();
+    setPushState(ok ? "on" : Notification.permission === "denied" ? "denied" : "off");
   }
 
   return (

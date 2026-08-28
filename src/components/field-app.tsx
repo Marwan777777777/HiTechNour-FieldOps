@@ -6,7 +6,7 @@ import { signOut } from "@/lib/auth/client";
 import { type Locale, t } from "@/lib/i18n";
 import { bootstrap, type HomeData } from "@/lib/server/field";
 import { updateLocale } from "@/lib/server/field";
-import { deviceId } from "@/lib/utils";
+import { getDeviceId } from "@/lib/device-bind";
 import { Button } from "@/components/ui/button";
 import { AlertsBell } from "./alerts-bell";
 import { AdminApp } from "./admin-app";
@@ -41,7 +41,8 @@ function FieldShell({ email, displayName }: { email?: string; displayName?: stri
 
   const boot = useQuery({
     queryKey: ["htn-home"],
-    queryFn: () => bootstrap({ data: { email, name: displayName, deviceId: deviceId() } }),
+    queryFn: async () =>
+      bootstrap({ data: { email, name: displayName, deviceId: await getDeviceId() } }),
   });
 
   useEffect(() => {

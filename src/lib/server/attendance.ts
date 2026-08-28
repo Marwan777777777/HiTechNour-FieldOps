@@ -1,4 +1,4 @@
-import { addCairoDays, cairoDate, isLateCheckin } from "@/lib/geo";
+import { addCairoDays, cairoDate, isLateCheckin, PAYROLL_CAP_HOURS } from "@/lib/geo";
 import type { Sql } from "@/lib/db";
 
 function isValidMonth(s: string | undefined): s is string {
@@ -62,7 +62,7 @@ export async function getDailyHours(sql: Sql, userId: string, monthParam?: strin
           day: "numeric",
         }).format(openSince),
       );
-      const hrs = (at.getTime() - openSince.getTime()) / 3_600_000;
+      const hrs = Math.min(PAYROLL_CAP_HOURS, (at.getTime() - openSince.getTime()) / 3_600_000);
       hoursByDay[cairoDay] = (hoursByDay[cairoDay] || 0) + hrs;
       openSince = null;
     }

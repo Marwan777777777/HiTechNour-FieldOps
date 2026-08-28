@@ -220,6 +220,11 @@ export const dict = {
     pushOn: "Phone alerts on",
     pushDenied: "Notifications blocked in the browser.",
     lockedOut: "Too many failed sign-ins. Try again in a few minutes.",
+    workedToday: "Worked today",
+    staleShift: "Open too long",
+    closeShift: "Close shift",
+    pushNudge: "Turn on alerts so you don’t miss shift changes.",
+    hoursNow: "h so far",
   },
   ar: {
     brand: "هاي تك نور",
@@ -440,6 +445,11 @@ export const dict = {
     pushOn: "تنبيهات الهاتف مفعّلة",
     pushDenied: "التنبيهات محظورة في المتصفح.",
     lockedOut: "محاولات دخول فاشلة كثيرة. أعد المحاولة بعد دقائق.",
+    workedToday: "عملت اليوم",
+    staleShift: "وردية مفتوحة طويلاً",
+    closeShift: "إغلاق الوردية",
+    pushNudge: "فعّل التنبيهات حتى لا تفوتك تغييرات الوردية.",
+    hoursNow: "س حتى الآن",
   },
 } as const;
 

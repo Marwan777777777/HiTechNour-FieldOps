@@ -25,6 +25,7 @@ import {
   adminOverview,
   adminReports,
   approveDevice,
+  closeOpenShift,
   exportAttendanceCsv,
   exportPayrollCsv,
   forceLogout,
@@ -159,8 +160,18 @@ export function AdminApp({
 }
 
 function Overview({ locale }: { locale: Locale }) {
+  const qc = useQueryClient();
   const q = useQuery({ queryKey: ["htn-overview"], queryFn: () => adminOverview(), refetchInterval: 15_000 });
   const map = useQuery({ queryKey: ["htn-live-map"], queryFn: () => liveMap(), refetchInterval: 20_000 });
+  const closeShift = useMutation({
+    mutationFn: (userId: string) => closeOpenShift({ data: { userId } }),
+    onSuccess: () => {
+      toast.success(t(locale, "saved"));
+      void qc.invalidateQueries({ queryKey: ["htn-overview"] });
+      void qc.invalidateQueries({ queryKey: ["htn-live-map"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Failed"),
+  });
   if (q.isLoading) return <Skeleton className="h-64" />;
   if (!q.data) return <Empty>{t(locale, "loadError")}</Empty>;
   const d = q.data;
@@ -208,6 +219,21 @@ function Overview({ locale }: { locale: Locale }) {
                     <td className="py-2.5 text-muted">{row.site_name}</td>
                     <td className="py-2.5 text-end font-mono text-xs text-faint">
                       {new Date(row.created_at).toLocaleTimeString()}
+                      {row.stale ? (
+                        <span className="ms-2 text-warn">{t(locale, "staleShift")}</span>
+                      ) : (
+                        <span className="ms-2">{Math.round(row.hours_open * 10) / 10}h</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 text-end">
+                      <Button
+                        variant="ghost"
+                        className="h-8 px-2 text-xs"
+                        disabled={closeShift.isPending}
+                        onClick={() => closeShift.mutate(row.user_id)}
+                      >
+                        {t(locale, "closeShift")}
+                      </Button>
                     </td>
                   </tr>
                 ))}

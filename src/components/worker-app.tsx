@@ -25,7 +25,9 @@ import { answerSurvey, loadAnnouncements, loadSurveys } from "@/lib/server/comms
 import { myLeave, requestLeave } from "@/lib/server/leave";
 import { HoursHeat } from "./hours-heat";
 import { OpsMap } from "./ops-map";
-import { clientEventId, deviceId } from "@/lib/utils";
+import { clientEventId } from "@/lib/utils";
+import { getDeviceId, maybeRegisterWebAuthn, punchMessage, signDeviceProof } from "@/lib/device-bind";
+import { PushNudge } from "./alerts-bell";
 
 type Tab = "home" | "history" | "jobs" | "reports" | "me";
 
@@ -158,7 +160,14 @@ function HomeTab({
   onHome: (next: HomeData) => void;
 }) {
   const qc = useQueryClient();
-  const [pos, setPos] = useState<{ lat: number; lng: number; accuracy: number; mock: boolean } | null>(null);
+  const [pos, setPos] = useState<{
+    lat: number;
+    lng: number;
+    accuracy: number;
+    mock: boolean;
+    altitude: number | null;
+    speed: number | null;
+  } | null>(null);
   const [locErr, setLocErr] = useState(false);
   const [siteId, setSiteId] = useState<number | null>(home.todayAssign[0]?.site_id ?? home.sites[0]?.id ?? null);
   const [offline, setOffline] = useState(typeof navigator !== "undefined" ? queuedCount() : 0);
@@ -170,12 +179,14 @@ function HomeTab({
     }
     const id = navigator.geolocation.watchPosition(
       (p) => {
-        const coords = p.coords as GeolocationCoordinates & { mock?: boolean };
+        const coords = p.coords as GeolocationCoordinates & { mock?: boolean; isFromMockProvider?: boolean };
         setPos({
           lat: coords.latitude,
           lng: coords.longitude,
           accuracy: coords.accuracy,
-          mock: Boolean(coords.mock),
+          mock: Boolean(coords.mock || coords.isFromMockProvider),
+          altitude: coords.altitude,
+          speed: coords.speed,
         });
         setLocErr(false);
       },
@@ -205,15 +216,35 @@ function HomeTab({
   const punch = useMutation({
     mutationFn: async () => {
       if (!site || !pos) throw new Error(t(locale, "waitingLocation"));
+      const eventId = clientEventId();
+      const deviceId = await getDeviceId();
+      if (!home.me.device_approved) {
+        await maybeRegisterWebAuthn(deviceId);
+      }
+      const proof = await signDeviceProof(
+        punchMessage({
+          deviceId,
+          clientEventId: eventId,
+          type: home.isCheckedIn ? "check_out" : "check_in",
+          lat: pos.lat,
+          lng: pos.lng,
+          siteId: site.id,
+        }),
+      );
       const payload = {
         siteId: site.id,
         lat: pos.lat,
         lng: pos.lng,
         accuracy: pos.accuracy,
+        altitude: pos.altitude,
+        speed: pos.speed,
         mock: pos.mock,
-        deviceId: deviceId(),
+        deviceId: proof.deviceId,
+        devicePublicKey: proof.devicePublicKey,
+        deviceSignature: proof.deviceSignature,
+        webauthnId: proof.webauthnId,
         type: (home.isCheckedIn ? "check_out" : "check_in") as "check_in" | "check_out",
-        clientEventId: clientEventId(),
+        clientEventId: eventId,
       };
       try {
         return await checkInOut({ data: payload });
@@ -276,6 +307,22 @@ function HomeTab({
           {t(locale, "offlineQueue")} · {offline}
         </p>
       ) : null}
+
+      <PushNudge locale={locale} />
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-lg border border-line bg-surface px-3 py-3">
+          <p className="text-xs uppercase tracking-widest text-muted">{t(locale, "workedToday")}</p>
+          <p className="mt-1 font-mono text-xl">
+            {home.todayHours ?? 0}
+            <span className="ms-1 text-xs text-faint">{t(locale, "hoursNow")}</span>
+          </p>
+        </div>
+        <div className="rounded-lg border border-line bg-surface px-3 py-3">
+          <p className="text-xs uppercase tracking-widest text-muted">{t(locale, "today")}</p>
+          <p className="mt-1 font-mono text-xl">{home.today}</p>
+        </div>
+      </div>
 
       <HomeFeed locale={locale} />
 

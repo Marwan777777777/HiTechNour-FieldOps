@@ -1,12 +1,16 @@
+import { randomUUID } from "node:crypto";
 import {
   CHECKIN_RATE_LIMIT,
+  STALE_SHIFT_HOURS,
   haversineMeters,
   isImpossibleTravel,
+  isLikelySpoofedGps,
   isOffHours,
   primaryFlag,
 } from "@/lib/geo";
 import { withTransaction } from "@/lib/db";
 import { approvedLeaveToday } from "./leave";
+import { publicKeyFingerprint, punchMessage, verifyDeviceSignature } from "./device";
 import type { Profile, Site } from "./types";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -25,8 +29,13 @@ export type CheckinPayload = {
   lat: number;
   lng: number;
   accuracy?: number;
+  altitude?: number | null;
+  speed?: number | null;
   mock?: boolean;
   deviceId: string;
+  devicePublicKey?: string;
+  deviceSignature?: string;
+  webauthnId?: string;
   type: "check_in" | "check_out";
   clientEventId: string;
 };
@@ -63,6 +72,58 @@ function validate(payload: CheckinPayload) {
   }
 }
 
+function proofOk(payload: CheckinPayload): boolean {
+  if (!payload.devicePublicKey || !payload.deviceSignature) return false;
+  if (publicKeyFingerprint(payload.devicePublicKey) !== payload.deviceId) return false;
+  return verifyDeviceSignature(
+    payload.devicePublicKey,
+    punchMessage({
+      deviceId: payload.deviceId,
+      clientEventId: payload.clientEventId,
+      type: payload.type,
+      lat: payload.lat,
+      lng: payload.lng,
+      siteId: payload.siteId,
+    }),
+    payload.deviceSignature,
+  );
+}
+
+type Tx = Parameters<Parameters<typeof withTransaction>[0]>[0];
+
+async function autoCloseStale(tx: Tx, userId: string) {
+  const prev = await tx<{
+    id: number;
+    type: string;
+    site_id: number;
+    lat: number;
+    lng: number;
+    created_at: string;
+    device_id: string;
+  }>`
+    select id, type, site_id, lat, lng, created_at::text as created_at, device_id
+    from checkins where user_id = ${userId}
+    order by created_at desc, id desc limit 1`;
+  const last = prev[0];
+  if (!last || last.type !== "check_in") return last ?? null;
+  const opened = new Date(last.created_at).getTime();
+  const ageH = (Date.now() - opened) / 3_600_000;
+  if (ageH < STALE_SHIFT_HOURS) return last;
+  const closedAt = new Date(opened + STALE_SHIFT_HOURS * 3_600_000);
+  await tx`
+    insert into checkins (
+      user_id, site_id, type, client_event_id, lat, lng, distance_meters, status,
+      device_id, device_matched, flagged, flag_reason, auto_closed, created_at
+    ) values (
+      ${userId}, ${last.site_id}, ${"check_out"}, ${randomUUID()},
+      ${last.lat}, ${last.lng}, ${0}, ${"inside"},
+      ${last.device_id}, ${true}, ${false}, ${null}, ${true}, ${closedAt.toISOString()}
+    )`;
+  await tx`insert into activity_logs (user_id, kind, detail)
+    values (${userId}, ${"auto_checkout"}, ${`stale ${STALE_SHIFT_HOURS}h`})`;
+  return { ...last, type: "check_out" as const };
+}
+
 export async function processCheckin(
   userId: string,
   payload: CheckinPayload,
@@ -76,20 +137,42 @@ export async function processCheckin(
   if (!me) throw new FieldError("NO_PROFILE", "No profile");
   if (!me.active) throw new FieldError("ACCOUNT_PENDING", "Account is not active.");
 
-  // Device registration is a separate state transition from attendance.
-  // Persist pending_device_id BEFORE the attendance transaction — otherwise a
-  // thrown pending error rolls the UPDATE back and admins never see the phone.
-  if (!me.device_approved || !me.device_id) {
+  const signed = proofOk(payload);
+  const signedPub = signed ? payload.devicePublicKey! : null;
+  const wa = payload.webauthnId ?? null;
+
+  if (!signed) {
+    // Unsigned punches (legacy/offline without key) cannot bind a new phone.
+    if (!me.device_approved || !me.device_id || me.device_id !== payload.deviceId) {
+      throw new FieldError("DEVICE_PENDING", "This device is awaiting admin approval.");
+    }
+  } else if (!me.device_approved || !me.device_id) {
     if (me.pending_device_id !== payload.deviceId) {
-      await sql`update profiles set pending_device_id = ${payload.deviceId}
+      await sql`update profiles
+        set pending_device_id = ${payload.deviceId},
+            pending_device_public_key = ${signedPub},
+            pending_device_webauthn_id = ${wa}
         where user_id = ${userId}`;
     }
     throw new FieldError("DEVICE_PENDING", "This device is awaiting admin approval.");
-  }
-  if (me.device_id !== payload.deviceId) {
-    await sql`update profiles set pending_device_id = ${payload.deviceId}
+  } else if (me.device_id !== payload.deviceId) {
+    await sql`update profiles
+      set pending_device_id = ${payload.deviceId},
+          pending_device_public_key = ${signedPub},
+          pending_device_webauthn_id = ${wa}
       where user_id = ${userId}`;
     throw new FieldError("DEVICE_PENDING", "This device is awaiting admin approval.");
+  } else if (me.device_public_key && me.device_public_key !== signedPub) {
+    await sql`update profiles
+      set pending_device_id = ${payload.deviceId},
+          pending_device_public_key = ${signedPub},
+          pending_device_webauthn_id = ${wa}
+      where user_id = ${userId}`;
+    throw new FieldError("DEVICE_PENDING", "This device is awaiting admin approval.");
+  } else if (!me.device_public_key && signedPub) {
+    await sql`update profiles set device_public_key = ${signedPub},
+      device_webauthn_id = coalesce(device_webauthn_id, ${wa})
+      where user_id = ${userId}`;
   }
 
   return withTransaction(async (tx) => {
@@ -121,8 +204,16 @@ export async function processCheckin(
     const site = siteRows[0];
     if (!site) throw new FieldError("SITE_NOT_FOUND", "Site not found.");
 
-    const prev = await tx<{ type: string; lat: number; lng: number; created_at: string }>`
-      select type, lat, lng, created_at::text as created_at
+    await autoCloseStale(tx, userId);
+
+    const prev = await tx<{
+      type: string;
+      lat: number;
+      lng: number;
+      created_at: string;
+      accuracy_meters: number | null;
+    }>`
+      select type, lat, lng, created_at::text as created_at, accuracy_meters
       from checkins where user_id = ${userId}
       order by created_at desc, id desc limit 1`;
     const previous = prev[0];
@@ -142,6 +233,11 @@ export async function processCheckin(
       throw new FieldError("RATE_LIMITED", "Too many check-in attempts. Please slow down.");
     }
 
+    const history = await tx<{ lat: number; lng: number; accuracy_meters: number | null }>`
+      select lat, lng, accuracy_meters from checkins
+      where user_id = ${userId}
+      order by created_at desc, id desc limit 4`;
+
     const dist = haversineMeters(payload.lat, payload.lng, site.lat, site.lng);
     const status = dist <= site.radius_meters ? "inside" : "outside";
     let impossible = false;
@@ -150,10 +246,18 @@ export async function processCheckin(
       const hours = (Date.now() - new Date(previous.created_at).getTime()) / 3_600_000;
       impossible = isImpossibleTravel(meters, hours);
     }
+    const spoofed = isLikelySpoofedGps({
+      lat: payload.lat,
+      lng: payload.lng,
+      accuracy: payload.accuracy,
+      mock: Boolean(payload.mock),
+      speed: payload.speed,
+      previous: history.map((h) => ({ lat: h.lat, lng: h.lng, accuracy: h.accuracy_meters })),
+    });
     const flag = primaryFlag({
       status,
       accuracy: payload.accuracy,
-      mock: Boolean(payload.mock),
+      mock: Boolean(payload.mock) || spoofed,
       deviceMatched: true,
       offHours: isOffHours(),
       impossibleTravel: impossible,
@@ -169,12 +273,14 @@ export async function processCheckin(
       created_at: string;
     }>`
       insert into checkins (
-        user_id, site_id, type, client_event_id, lat, lng, accuracy_meters, distance_meters, status,
+        user_id, site_id, type, client_event_id, lat, lng, accuracy_meters, altitude_meters, speed_mps,
+        distance_meters, status,
         device_id, device_matched, is_mock_location, is_off_hours, flagged, flag_reason
       ) values (
         ${userId}, ${payload.siteId}, ${payload.type}, ${payload.clientEventId},
-        ${payload.lat}, ${payload.lng}, ${payload.accuracy ?? null}, ${dist}, ${status},
-        ${payload.deviceId}, ${true}, ${Boolean(payload.mock)}, ${isOffHours()},
+        ${payload.lat}, ${payload.lng}, ${payload.accuracy ?? null}, ${payload.altitude ?? null},
+        ${payload.speed ?? null}, ${dist}, ${status},
+        ${payload.deviceId}, ${true}, ${Boolean(payload.mock) || spoofed}, ${isOffHours()},
         ${flag !== null}, ${flag}
       )
       on conflict (user_id, client_event_id) do nothing
@@ -205,3 +311,5 @@ export async function processCheckin(
     };
   });
 }
+
+export { STALE_SHIFT_HOURS };

@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
-import { cairoDate } from "@/lib/geo";
+import { cairoDate, PAYROLL_CAP_HOURS } from "@/lib/geo";
 import { FieldError, processCheckin } from "./checkin-engine";
 import { getDailyHours, getMonthlyAttendance } from "./attendance";
 import { notifyAndPush } from "./notify";
@@ -87,6 +87,21 @@ async function loadHome(userId: string) {
       where user_id = ${userId} and read = false`,
   ]);
 
+  let todayHours = 0;
+  let openSince: Date | null = null;
+  const chronological = [...history].reverse();
+  for (const ev of chronological) {
+    const at = new Date(ev.created_at);
+    if (ev.type === "check_in") openSince = at;
+    else if (ev.type === "check_out" && openSince) {
+      todayHours += Math.min(PAYROLL_CAP_HOURS, (at.getTime() - openSince.getTime()) / 3_600_000);
+      openSince = null;
+    }
+  }
+  if (openSince) {
+    todayHours += Math.min(PAYROLL_CAP_HOURS, (Date.now() - openSince.getTime()) / 3_600_000);
+  }
+
   return {
     me,
     sites,
@@ -95,6 +110,7 @@ async function loadHome(userId: string) {
     timeline: history,
     unread: unread[0]?.c ?? 0,
     today,
+    todayHours: Math.round(todayHours * 10) / 10,
   };
 }
 
@@ -111,8 +127,13 @@ export const checkInOut = createServerFn({ method: "POST" })
       lat: number;
       lng: number;
       accuracy?: number;
+      altitude?: number | null;
+      speed?: number | null;
       mock?: boolean;
       deviceId: string;
+      devicePublicKey?: string;
+      deviceSignature?: string;
+      webauthnId?: string;
       type: "check_in" | "check_out";
       clientEventId: string;
     }) => d,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { addCairoDays, haversineMeters, isImpossibleTravel, isLateCheckin, primaryFlag } from "./geo.ts";
+import { addCairoDays, haversineMeters, isImpossibleTravel, isLateCheckin, isLikelySpoofedGps, primaryFlag } from "./geo.ts";
 
 describe("haversineMeters", () => {
   it("is ~0 at the same point", () => {
@@ -49,5 +49,23 @@ describe("late cutoff", () => {
     // 09:16 Africa/Cairo = 06:16 UTC in summer (EEST, UTC+3)
     const at = new Date("2026-08-28T06:16:00Z");
     assert.equal(isLateCheckin(at), true);
+  });
+});
+
+describe("isLikelySpoofedGps", () => {
+  it("trusts the phone when it admits mock", () => {
+    assert.equal(isLikelySpoofedGps({ lat: 30.0561, lng: 31.3395, accuracy: 12, mock: true }), true);
+  });
+  it("flags zero accuracy", () => {
+    assert.equal(isLikelySpoofedGps({ lat: 30.0561, lng: 31.3395, accuracy: 0 }), true);
+  });
+  it("does not flag a normal Cairo GPS fix", () => {
+    assert.equal(
+      isLikelySpoofedGps({ lat: 30.056183, lng: 31.339512, accuracy: 14, mock: false }),
+      false,
+    );
+  });
+  it("flags coarse coordinates that claim high accuracy", () => {
+    assert.equal(isLikelySpoofedGps({ lat: 30.06, lng: 31.34, accuracy: 5, mock: false }), true);
   });
 });

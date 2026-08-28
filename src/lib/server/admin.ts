@@ -4,6 +4,7 @@ import { getSql } from "@/lib/db";
 import { getDailyHours, getMonthlyAttendance, overviewRoster } from "./attendance";
 import { requireAdmin } from "./admin-guard";
 import { notifyAndPush } from "./notify";
+import { PAYROLL_CAP_HOURS } from "@/lib/geo";
 import type { Profile, Site } from "./types";
 
 export const adminOverview = createServerFn({ method: "GET" })
@@ -19,8 +20,12 @@ export const adminOverview = createServerFn({ method: "GET" })
         full_name: string;
         site_name: string;
         created_at: string;
+        hours_open: number;
+        stale: boolean;
       }>`
-        select p.user_id, p.full_name, s.name as site_name, c.created_at::text as created_at
+        select p.user_id, p.full_name, s.name as site_name, c.created_at::text as created_at,
+               (extract(epoch from (now() - c.created_at)) / 3600.0)::float as hours_open,
+               (extract(epoch from (now() - c.created_at)) / 3600.0 >= 12) as stale
         from profiles p
         join lateral (
           select type, site_id, created_at from checkins
@@ -199,7 +204,11 @@ export const approveDevice = createServerFn({ method: "POST" })
     const rows = await sql<{ user_id: string }>`
       update profiles
       set device_id = coalesce(pending_device_id, device_id),
+          device_public_key = coalesce(pending_device_public_key, device_public_key),
+          device_webauthn_id = coalesce(pending_device_webauthn_id, device_webauthn_id),
           pending_device_id = null,
+          pending_device_public_key = null,
+          pending_device_webauthn_id = null,
           device_approved = true,
           active = true,
           device_bound_at = now()
@@ -225,10 +234,51 @@ export const resetDevice = createServerFn({ method: "POST" })
     await requireAdmin(context.userId);
     const sql = await getSql();
     await sql`update profiles
-      set device_id = null, pending_device_id = null, device_approved = false, device_bound_at = null
+      set device_id = null, pending_device_id = null,
+          device_public_key = null, pending_device_public_key = null,
+          device_webauthn_id = null, pending_device_webauthn_id = null,
+          device_approved = false, device_bound_at = null
       where user_id = ${data.userId}`;
     await sql`insert into activity_logs (user_id, kind, detail)
       values (${context.userId}, ${"reset_device"}, ${data.userId})`;
+    return { ok: true };
+  });
+
+export const closeOpenShift = createServerFn({ method: "POST" })
+  .validator((d: { userId: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    await requireAdmin(context.userId);
+    const { randomUUID } = await import("node:crypto");
+    const { STALE_SHIFT_HOURS } = await import("@/lib/geo");
+    const sql = await getSql();
+    const last = await sql<{
+      type: string;
+      site_id: number;
+      lat: number;
+      lng: number;
+      created_at: string;
+      device_id: string;
+    }>`
+      select type, site_id, lat, lng, created_at::text as created_at, device_id
+      from checkins where user_id = ${data.userId}
+      order by created_at desc, id desc limit 1`;
+    const row = last[0];
+    if (!row || row.type !== "check_in") throw new Error("NOT_CHECKED_IN");
+    const opened = new Date(row.created_at).getTime();
+    const cap = opened + STALE_SHIFT_HOURS * 3_600_000;
+    const closedAt = new Date(Math.min(Date.now(), cap));
+    await sql`
+      insert into checkins (
+        user_id, site_id, type, client_event_id, lat, lng, distance_meters, status,
+        device_id, device_matched, flagged, auto_closed, created_at
+      ) values (
+        ${data.userId}, ${row.site_id}, ${"check_out"}, ${randomUUID()},
+        ${row.lat}, ${row.lng}, ${0}, ${"inside"},
+        ${row.device_id}, ${true}, ${false}, ${true}, ${closedAt.toISOString()}
+      )`;
+    await sql`insert into activity_logs (user_id, kind, detail)
+      values (${context.userId}, ${"close_shift"}, ${data.userId})`;
     return { ok: true };
   });
 
@@ -527,11 +577,13 @@ export const exportPayrollCsv = createServerFn({ method: "GET" })
       hours: number;
       flagged: number;
       leave: string;
+      open: boolean;
     };
     const byKey = new Map<string, DayRow>();
     const cairoDay = (iso: string) =>
       new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo" }).format(new Date(iso));
 
+    const openSince = new Map<string, { at: string; key: string }>();
     for (const p of punches) {
       const day = cairoDay(p.created_at);
       const key = `${p.user_id}|${day}`;
@@ -546,16 +598,32 @@ export const exportPayrollCsv = createServerFn({ method: "GET" })
           hours: 0,
           flagged: 0,
           leave: "",
+          open: false,
         };
         byKey.set(key, row);
       }
-      if (p.type === "check_in" && !row.firstIn) row.firstIn = p.created_at;
-      if (p.type === "check_out") row.lastOut = p.created_at;
       if (p.flagged) row.flagged += 1;
-    }
-    for (const row of byKey.values()) {
-      if (row.firstIn && row.lastOut) {
-        row.hours = Math.round(((new Date(row.lastOut).getTime() - new Date(row.firstIn).getTime()) / 3_600_000) * 10) / 10;
+      if (p.type === "check_in") {
+        if (!row.firstIn) row.firstIn = p.created_at;
+        openSince.set(p.user_id, { at: p.created_at, key });
+        row.open = true;
+      } else if (p.type === "check_out") {
+        const opened = openSince.get(p.user_id);
+        if (opened) {
+          const hrs = Math.min(
+            PAYROLL_CAP_HOURS,
+            (new Date(p.created_at).getTime() - new Date(opened.at).getTime()) / 3_600_000,
+          );
+          const target = byKey.get(opened.key);
+          if (target) {
+            target.hours = Math.round((target.hours + hrs) * 10) / 10;
+            target.lastOut = p.created_at;
+            target.open = false;
+          }
+          openSince.delete(p.user_id);
+        }
+        row.lastOut = p.created_at;
+        row.open = false;
       }
     }
     for (const lv of leaves) {
@@ -575,6 +643,7 @@ export const exportPayrollCsv = createServerFn({ method: "GET" })
             hours: 0,
             flagged: 0,
             leave: lv.kind,
+            open: false,
           });
         }
         const d = new Date(`${cursor}T12:00:00Z`);
@@ -582,7 +651,7 @@ export const exportPayrollCsv = createServerFn({ method: "GET" })
         cursor = d.toISOString().slice(0, 10);
       }
     }
-    const header = "worker,email,date,first_in,last_out,hours,flagged_punches,leave";
+    const header = "worker,email,date,first_in,last_out,hours,flagged_punches,leave,open_shift";
     const lines = [...byKey.values()]
       .sort((a, b) => a.worker.localeCompare(b.worker) || a.date.localeCompare(b.date))
       .map((r) =>
@@ -595,6 +664,7 @@ export const exportPayrollCsv = createServerFn({ method: "GET" })
           r.hours,
           r.flagged,
           r.leave,
+          r.open ? "yes" : "",
         ].join(","),
       );
     return { csv: [header, ...lines].join("\n"), filename: `payroll-${data.from}-to-${data.to}.csv` };

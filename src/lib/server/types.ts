@@ -13,6 +13,10 @@ export type Profile = {
   pending_device_id: string | null;
   device_approved: boolean;
   device_bound_at: string | null;
+  device_public_key?: string | null;
+  pending_device_public_key?: string | null;
+  device_webauthn_id?: string | null;
+  pending_device_webauthn_id?: string | null;
   token_version: number;
   active: boolean;
 };

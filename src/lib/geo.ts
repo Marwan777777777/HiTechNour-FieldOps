@@ -1,3 +1,42 @@
+export const STALE_SHIFT_HOURS = 12;
+export const PAYROLL_CAP_HOURS = 12;
+
+export function decimalPlaces(n: number): number {
+  const s = Math.abs(n).toString();
+  const frac = s.split(".")[1] ?? "";
+  return frac.replace(/0+$/, "").length;
+}
+
+export function isLikelySpoofedGps(input: {
+  lat: number;
+  lng: number;
+  accuracy?: number | null;
+  mock?: boolean;
+  speed?: number | null;
+  previous?: { lat: number; lng: number; accuracy?: number | null }[];
+}): boolean {
+  if (input.mock) return true;
+  const acc = input.accuracy ?? 999;
+  let hits = 0;
+  if (acc === 0) hits += 2;
+  if (acc > 0 && acc < 25 && decimalPlaces(input.lat) <= 2 && decimalPlaces(input.lng) <= 2) hits += 2;
+  const prev = input.previous ?? [];
+  if (prev.length >= 3) {
+    const accs = [acc, ...prev.map((p) => p.accuracy ?? -1)].slice(0, 4);
+    const locked = accs.every((a) => Math.abs(a - accs[0]) < 0.05 && a > 0 && a <= 15);
+    if (locked) {
+      const last = prev[0];
+      const moved = haversineMeters(input.lat, input.lng, last.lat, last.lng);
+      if (moved > 200) hits += 1;
+    }
+  }
+  if (prev[0] && (input.speed === 0 || input.speed == null)) {
+    const moved = haversineMeters(input.lat, input.lng, prev[0].lat, prev[0].lng);
+    if (moved > 800 && acc < 20) hits += 1;
+  }
+  return hits >= 2;
+}
+
 export const WORK_START_HOUR = 6;
 export const WORK_END_HOUR = 20;
 export const ACCURACY_THRESHOLD_M = 100;

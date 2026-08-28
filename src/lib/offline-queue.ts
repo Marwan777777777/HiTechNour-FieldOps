@@ -7,8 +7,13 @@ export type QueuedPunch = {
   lat: number;
   lng: number;
   accuracy?: number;
+  altitude?: number | null;
+  speed?: number | null;
   mock?: boolean;
   deviceId: string;
+  devicePublicKey?: string;
+  deviceSignature?: string;
+  webauthnId?: string;
   type: "check_in" | "check_out";
   clientEventId: string;
   queuedAt: number;
