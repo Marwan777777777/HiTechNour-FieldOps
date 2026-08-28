@@ -53,8 +53,9 @@ export function OpsMap({ sites = [], people = [], worker, pickable, onPick, clas
         attributionControl: true,
         scrollWheelZoom: true,
       });
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-        attribution: "&copy; OSM &copy; CARTO",
+      // OSM is free and needs no key. Carto dark_all now watermarks "API KEY REQUIRED".
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "&copy; OpenStreetMap",
         maxZoom: 19,
       }).addTo(map);
       map.setView([30.0444, 31.2357], 10);
@@ -134,5 +135,5 @@ export function OpsMap({ sites = [], people = [], worker, pickable, onPick, clas
     });
   }, [ready, sites, people, worker]);
 
-  return <div ref={el} className={cn("ops-map", className)} />;
+  return <div ref={el} className={cn("ops-map ops-map-osm", className)} />;
 }
