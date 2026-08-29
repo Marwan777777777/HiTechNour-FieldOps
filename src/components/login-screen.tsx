@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Eye, EyeOff, X } from "lucide-react";
 import { authClient } from "@/lib/auth/client";
 import { type Locale, t } from "@/lib/i18n";
+import { enforceMobileLogin } from "@/lib/server/device-gate";
 import { BrandMark } from "./chrome";
 
 const FACEBOOK_URL = "https://www.facebook.com/HTNTechnologies/";
@@ -68,6 +69,12 @@ export function LoginScreen() {
           const msg = String(res.error.message ?? "");
           if (msg.includes("LOCKED_OUT")) throw new Error(t(locale, "lockedOut"));
           throw new Error(t(locale, "incorrectCreds"));
+        }
+        try {
+          await enforceMobileLogin();
+        } catch {
+          await authClient.signOut();
+          throw new Error(t(locale, "mobileOnly"));
         }
       }
       await navigate({ to: "/" });

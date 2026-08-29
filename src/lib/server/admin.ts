@@ -38,7 +38,8 @@ export const adminOverview = createServerFn({ method: "GET" })
         order by c.created_at desc`,
       sql<{ c: number }>`select count(*)::int as c from checkins where flagged = true and reviewed = false`,
       sql<{ c: number }>`select count(*)::int as c from profiles
-        where role = 'employee' and (active = false or device_approved = false)`,
+        where role = 'employee'
+          and (active = false or (device_approved = false and pending_device_id is not null))`,
       sql<{ c: number }>`select count(*)::int as c from reports where status = 'submitted'`,
       sql<{ c: number }>`select count(*)::int as c from leave_requests where status = 'pending'`,
     ]);
@@ -87,7 +88,8 @@ export const listFlagged = createServerFn({ method: "GET" })
     }>`
       select user_id, full_name, email, pending_device_id, active, device_approved
       from profiles
-      where role = 'employee' and (active = false or device_approved = false)
+      where role = 'employee'
+        and (active = false or (device_approved = false and pending_device_id is not null))
       order by created_at desc`;
     return { flagged, pendingPeople };
   });
