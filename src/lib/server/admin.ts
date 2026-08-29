@@ -298,6 +298,34 @@ export const setWorkerActive = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+export const deleteWorker = createServerFn({ method: "POST" })
+  .validator((d: { userId: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    await requireAdmin(context.userId);
+    if (data.userId === context.userId) throw new Error("Cannot delete yourself.");
+    const sql = await getSql();
+    const target = await sql<{ full_name: string }>`
+      select full_name from profiles where user_id = ${data.userId}`;
+    if (!target[0]) throw new Error("Worker not found.");
+    const checkinCount = await sql<{ c: number }>`
+      select count(*)::int as c from checkins where user_id = ${data.userId}`;
+    if ((checkinCount[0]?.c ?? 0) > 0) {
+      throw new Error(
+        "HAS_ATTENDANCE_HISTORY: This worker has attendance records and cannot be permanently " +
+          "deleted — deactivate instead to preserve payroll history.",
+      );
+    }
+    // No attendance history: safe to hard-delete. worker_skills, assignments,
+    // reports, leave_requests, survey_answers, notifications and
+    // push_subscriptions all cascade from profiles/user via their own FKs.
+    await sql`delete from profiles where user_id = ${data.userId}`;
+    await sql`delete from "user" where id = ${data.userId}`;
+    await sql`insert into activity_logs (user_id, kind, detail)
+      values (${context.userId}, ${"delete_worker"}, ${`${target[0].full_name} (${data.userId})`})`;
+    return { ok: true };
+  });
+
 export const forceLogout = createServerFn({ method: "POST" })
   .validator((d: { userId: string }) => d)
   .middleware([authMiddleware])
@@ -355,6 +383,32 @@ export const saveSite = createServerFn({ method: "POST" })
       await sql`insert into sites (name, address, lat, lng, radius_meters)
         values (${name}, ${data.address ?? null}, ${data.lat}, ${data.lng}, ${radius})`;
     }
+    return { ok: true };
+  });
+
+export const deleteSite = createServerFn({ method: "POST" })
+  .validator((d: { id: number }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    await requireAdmin(context.userId);
+    const sql = await getSql();
+    const target = await sql<{ name: string }>`select name from sites where id = ${data.id}`;
+    if (!target[0]) throw new Error("Site not found.");
+    const [checkinCount, reportCount] = await Promise.all([
+      sql<{ c: number }>`select count(*)::int as c from checkins where site_id = ${data.id}`,
+      sql<{ c: number }>`select count(*)::int as c from reports where site_id = ${data.id}`,
+    ]);
+    if ((checkinCount[0]?.c ?? 0) > 0 || (reportCount[0]?.c ?? 0) > 0) {
+      throw new Error(
+        "HAS_HISTORY: This site has attendance or report history and cannot be permanently " +
+          "deleted — deactivate instead to preserve those records.",
+      );
+    }
+    // No history: safe to hard-delete. assignments and site_skill_requirements
+    // cascade from sites via their own FKs.
+    await sql`delete from sites where id = ${data.id}`;
+    await sql`insert into activity_logs (user_id, kind, detail)
+      values (${context.userId}, ${"delete_site"}, ${`${target[0].name} (#${data.id})`})`;
     return { ok: true };
   });
 
@@ -708,4 +762,3 @@ export const liveMap = createServerFn({ method: "GET" })
       where c.type = 'check_in'`;
     return { sites, people };
   });
-
