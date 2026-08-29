@@ -108,18 +108,19 @@ export const reviewCheckin = createServerFn({ method: "POST" })
   });
 
 export const listWorkers = createServerFn({ method: "GET" })
-  .validator((d: { q?: string; page?: number; includeInactive?: boolean }) => d)
+  .validator((d: { q?: string; page?: number; includeInactive?: boolean; pageSize?: number }) => d)
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     await requireAdmin(context.userId);
     const sql = await getSql();
     const page = Math.max(0, data.page ?? 0);
-    const pageSize = 30;
+    const pageSize = Math.min(500, Math.max(1, data.pageSize ?? 30));
     const q = `%${(data.q ?? "").trim().toLowerCase()}%`;
     const rows = await sql<{
       user_id: string;
       full_name: string;
       email: string | null;
+      username: string | null;
       phone: string | null;
       role: string;
       active: boolean;
@@ -128,7 +129,7 @@ export const listWorkers = createServerFn({ method: "GET" })
       locale: string;
       created_at: string;
     }>`
-      select user_id, full_name, email, phone, role, active, device_approved, pending_device_id,
+      select user_id, full_name, email, username, phone, role, active, device_approved, pending_device_id,
              locale, created_at::text as created_at
       from profiles
       where (${data.includeInactive ?? true} or active = true)
@@ -136,6 +137,7 @@ export const listWorkers = createServerFn({ method: "GET" })
           ${data.q ?? ""} = ''
           or lower(full_name) like ${q}
           or lower(coalesce(email, '')) like ${q}
+          or lower(coalesce(username, '')) like ${q}
         )
       order by role desc, full_name
       limit ${pageSize} offset ${page * pageSize}`;
@@ -146,6 +148,7 @@ export const listWorkers = createServerFn({ method: "GET" })
           ${data.q ?? ""} = ''
           or lower(full_name) like ${q}
           or lower(coalesce(email, '')) like ${q}
+          or lower(coalesce(username, '')) like ${q}
         )`;
     return { rows, total: count[0]?.c ?? 0, page, pageSize };
   });

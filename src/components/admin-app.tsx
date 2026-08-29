@@ -1,6 +1,9 @@
 import {
   CalendarDays,
+  ChevronDown,
+  ChevronRight,
   ClipboardList,
+  Copy,
   Download,
   Flag,
   LayoutDashboard,
@@ -11,7 +14,7 @@ import {
   Sparkles,
   Users,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -90,6 +93,32 @@ const NAV: { id: AdminTab; label: Msg; icon: typeof LayoutDashboard }[] = [
   { id: "export", label: "export", icon: Download },
   { id: "field", label: "fieldPunch", icon: MapPin },
 ];
+
+function loginName(row: { username?: string | null; email?: string | null }) {
+  const u = row.username?.trim();
+  if (u) return u;
+  const email = row.email?.trim();
+  if (email) return email.split("@")[0] ?? email;
+  return "—";
+}
+
+async function copyText(value: string, okLabel = "Copied") {
+  try {
+    await navigator.clipboard.writeText(value);
+    toast.success(okLabel);
+  } catch {
+    toast.error("Copy failed");
+  }
+}
+
+function randomPassword() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  let out = "";
+  crypto.getRandomValues(new Uint32Array(10)).forEach((n) => {
+    out += chars[n % chars.length];
+  });
+  return out;
+}
 
 export function AdminApp({
   home,
@@ -410,7 +439,7 @@ function People({ locale, home }: { locale: Locale; home: HomeData }) {
                 >
                   <span>
                     <span className="block text-sm font-medium">{row.full_name}</span>
-                    <span className="font-mono text-xs text-faint">{row.email}</span>
+                    <span className="font-mono text-xs text-faint">{loginName(row)}</span>
                   </span>
                   <span className={`text-xs ${row.active ? "text-ok" : "text-warn"}`}>
                     {row.active ? (row.device_approved ? "ok" : "device") : "off"}
@@ -498,12 +527,39 @@ function WorkerDetail({
   const [task, setTask] = useState("");
   const [siteId, setSiteId] = useState(sites[0]?.id ?? 0);
   const [newPass, setNewPass] = useState("");
+  const [revealedPass, setRevealedPass] = useState("");
   const today = cairoDate();
+  const uname = loginName(u);
   return (
     <Panel className="grid gap-4">
       <div>
         <h2 className="font-display text-xl font-semibold">{u.full_name}</h2>
         <p className="font-mono text-xs text-muted">{u.email}</p>
+      </div>
+      <div className="rounded-xl border border-line bg-elevated p-3">
+        <Kicker>{t(locale, "loginAs")}</Kicker>
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <div>
+            <p className="text-[11px] uppercase tracking-widest text-faint">{t(locale, "username")}</p>
+            <p className="font-mono text-sm font-medium">{uname}</p>
+          </div>
+          <Button type="button" variant="ghost" className="h-9 px-2" onClick={() => void copyText(uname, t(locale, "copied"))}>
+            <Copy className="size-3.5" />
+            <span className="sr-only">{t(locale, "copy")}</span>
+          </Button>
+        </div>
+        <p className="mt-2 text-xs text-faint">{t(locale, "passwordHidden")}</p>
+        {revealedPass ? (
+          <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-ok/30 bg-bg px-3 py-2">
+            <div>
+              <p className="font-mono text-sm font-medium">{revealedPass}</p>
+              <p className="text-[11px] text-ok">{t(locale, "passwordOnce")}</p>
+            </div>
+            <Button type="button" variant="ghost" className="h-9 px-2" onClick={() => void copyText(revealedPass, t(locale, "copied"))}>
+              <Copy className="size-3.5" />
+            </Button>
+          </div>
+        ) : null}
       </div>
       <div className="grid grid-cols-2 gap-3">
         <Stat label={t(locale, "daysPresent")} value={`${data.monthly.daysPresent}/${data.monthly.daysInMonth}`} />
@@ -580,16 +636,21 @@ function WorkerDetail({
       <div className="flex gap-2">
         <input
           className="h-11 flex-1 rounded-lg border border-line bg-elevated px-3 text-sm"
-          type="password"
+          type="text"
+          autoComplete="off"
           placeholder={t(locale, "newPassword")}
           value={newPass}
           onChange={(e) => setNewPass(e.target.value)}
         />
+        <Button type="button" variant="ghost" onClick={() => setNewPass(randomPassword())}>
+          {t(locale, "generatePassword")}
+        </Button>
         <Button
           variant="outline"
           disabled={newPass.length < 8}
           onClick={async () => {
             await resetWorkerPassword({ data: { userId: u.user_id, newPassword: newPass } });
+            setRevealedPass(newPass);
             setNewPass("");
             toast.success(t(locale, "passwordReset"));
           }}
@@ -912,12 +973,17 @@ function SiteForm({
 
 function Skills({ locale }: { locale: Locale }) {
   const q = useQuery({ queryKey: ["htn-skills"], queryFn: () => listSkills() });
-  const workers = useQuery({ queryKey: ["htn-workers", "skills"], queryFn: () => listWorkers({ data: {} }) });
+  const workers = useQuery({
+    queryKey: ["htn-workers", "skills"],
+    queryFn: () => listWorkers({ data: { pageSize: 500, includeInactive: false } }),
+  });
   const sites = useQuery({ queryKey: ["htn-sites"], queryFn: () => listSites() });
   const cover = useQuery({ queryKey: ["htn-coverage"], queryFn: () => skillCoverage() });
   const [siteId, setSiteId] = useState(0);
   const [skillId, setSkillId] = useState(0);
   const [need, setNeed] = useState("1");
+  const [listOpen, setListOpen] = useState(true);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   if (q.isLoading) return <Skeleton className="h-64" />;
   const skills = q.data?.skills ?? [];
   const byUser = new Map<string, { name: string; levels: Record<number, number> }>();
@@ -926,9 +992,29 @@ function Skills({ locale }: { locale: Locale }) {
     cur.levels[w.skill_id] = w.level;
     byUser.set(w.user_id, cur);
   }
+  const employeeRows = (workers.data?.rows ?? []).filter((r) => r.role === "employee");
+  const groups = new Map<string, typeof employeeRows>();
+  for (const w of employeeRows) {
+    const letter = (w.full_name.trim()[0] ?? "#").toLocaleUpperCase();
+    const key = letter || "#";
+    const list = groups.get(key) ?? [];
+    list.push(w);
+    groups.set(key, list);
+  }
+  const letters = [...groups.keys()].sort();
   return (
     <div className="grid gap-6">
-      <h1 className="font-display text-2xl font-semibold">{t(locale, "skills")}</h1>
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="font-display text-2xl font-semibold">{t(locale, "skills")}</h1>
+        <Button type="button" variant="outline" onClick={() => setListOpen((v) => !v)}>
+          {listOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+          {listOpen ? t(locale, "collapseList") : t(locale, "expandList")}
+          <span className="text-faint">
+            · {employeeRows.length} {t(locale, "workersCount")}
+          </span>
+        </Button>
+      </div>
+      {listOpen ? (
       <div className="overflow-auto rounded-xl border border-line">
         <table className="w-full min-w-lg text-sm">
           <thead className="bg-elevated text-xs uppercase tracking-widest text-muted">
@@ -942,36 +1028,64 @@ function Skills({ locale }: { locale: Locale }) {
             </tr>
           </thead>
           <tbody>
-            {(workers.data?.rows ?? []).filter((r) => r.role === "employee").map((w) => (
-              <tr key={w.user_id} className="border-t border-line">
-                <td className="px-3 py-2 font-medium">{w.full_name}</td>
-                {skills.map((s) => (
-                  <td key={s.id} className="px-3 py-2">
-                    <select
-                      className="h-9 rounded-md border border-line bg-elevated px-2 font-mono text-xs"
-                      value={byUser.get(w.user_id)?.levels[s.id] ?? 0}
-                      onChange={async (e) => {
-                        const level = Number(e.target.value);
-                        if (!level) return;
-                        await setWorkerSkill({ data: { userId: w.user_id, skillId: s.id, level } });
-                        void q.refetch();
-                        void cover.refetch();
-                      }}
-                    >
-                      <option value={0}>—</option>
-                      {[1, 2, 3, 4, 5].map((n) => (
-                        <option key={n} value={n}>
-                          {n}
-                        </option>
+            {letters.map((letter) => {
+              const rows = groups.get(letter) ?? [];
+              const shut = collapsed[letter] === true;
+              return (
+                <Fragment key={letter}>
+                  <tr className="border-t border-line bg-surface">
+                    <td colSpan={skills.length + 1} className="px-2 py-1">
+                      <button
+                        type="button"
+                        className="flex min-h-9 w-full items-center gap-2 rounded-md px-2 text-start text-xs font-semibold uppercase tracking-widest text-muted hover:text-fg"
+                        onClick={() => setCollapsed((c) => ({ ...c, [letter]: !shut }))}
+                      >
+                        {shut ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+                        {letter}
+                        <span className="font-mono text-faint">{rows.length}</span>
+                      </button>
+                    </td>
+                  </tr>
+                  {shut
+                    ? null
+                    : rows.map((w) => (
+                        <tr key={w.user_id} className="border-t border-line">
+                          <td className="px-3 py-2 font-medium">{w.full_name}</td>
+                          {skills.map((s) => (
+                            <td key={s.id} className="px-3 py-2">
+                              <select
+                                className="h-9 rounded-md border border-line bg-elevated px-2 font-mono text-xs"
+                                value={byUser.get(w.user_id)?.levels[s.id] ?? 0}
+                                onChange={async (e) => {
+                                  const level = Number(e.target.value);
+                                  if (!level) return;
+                                  await setWorkerSkill({ data: { userId: w.user_id, skillId: s.id, level } });
+                                  void q.refetch();
+                                  void cover.refetch();
+                                }}
+                              >
+                                <option value={0}>—</option>
+                                {[1, 2, 3, 4, 5].map((n) => (
+                                  <option key={n} value={n}>
+                                    {n}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                          ))}
+                        </tr>
                       ))}
-                    </select>
-                  </td>
-                ))}
-              </tr>
-            ))}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
+      ) : (
+        <Empty>
+          {employeeRows.length} {t(locale, "workersCount")} — {t(locale, "expandList")}
+        </Empty>
+      )}
       <Panel className="grid gap-2">
         <Kicker>{t(locale, "setNeed")}</Kicker>
         <div className="grid gap-2 md:grid-cols-4">
