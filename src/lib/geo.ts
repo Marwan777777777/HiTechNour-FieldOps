@@ -143,3 +143,112 @@ export function primaryFlag(input: {
   if (input.offHours) return "off_hours";
   return null;
 }
+
+export type MapsPin = { lat: number; lng: number; name?: string };
+
+function validCoord(lat: number, lng: number): boolean {
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lng) <= 180 &&
+    !(lat === 0 && lng === 0)
+  );
+}
+
+function placeNameFromMapsPath(raw: string): string | undefined {
+  const m = raw.match(/\/maps\/(?:place|search)\/([^/@?]+)/i);
+  if (!m?.[1]) return undefined;
+  const token = m[1];
+  if (/^-?\d/.test(token) || /%C2%B0/i.test(token)) return undefined;
+  try {
+    const name = decodeURIComponent(token.replace(/\+/g, " ")).trim();
+    if (!name || /^-?\d+\.?\d*\s*,\s*-?\d+/.test(name)) return undefined;
+    return name.slice(0, 80);
+  } catch {
+    return undefined;
+  }
+}
+
+/** True for Google short links that only resolve after a redirect. */
+export function needsMapsExpand(input: string): boolean {
+  try {
+    const trimmed = input.trim();
+    const u = new URL(/^https?:/i.test(trimmed) ? trimmed : `https://${trimmed}`);
+    const host = u.hostname.replace(/^www\./, "").toLowerCase();
+    return (
+      host === "maps.app.goo.gl" ||
+      host === "goo.gl" ||
+      host === "g.co" ||
+      host.endsWith(".app.goo.gl")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pull lat/lng out of a Google Maps / Apple Maps / OSM / geo: / "lat,lng" string.
+ * Prefers the place pin (`!3d!4d`) over the camera (`@lat,lng`).
+ */
+export function parseGoogleMapsUrl(input: string): MapsPin | null {
+  const raw = input.trim();
+  if (!raw) return null;
+
+  const bang = [...raw.matchAll(/!3d(-?\d+\.?\d*)!4d(-?\d+\.?\d*)/g)];
+  if (bang.length) {
+    const last = bang[bang.length - 1];
+    const lat = Number(last[1]);
+    const lng = Number(last[2]);
+    if (validCoord(lat, lng)) return { lat, lng, name: placeNameFromMapsPath(raw) };
+  }
+
+  const at = raw.match(/@(-?\d+\.?\d*),\s*(-?\d+\.?\d*)/);
+  if (at) {
+    const lat = Number(at[1]);
+    const lng = Number(at[2]);
+    if (validCoord(lat, lng)) return { lat, lng, name: placeNameFromMapsPath(raw) };
+  }
+
+  let url: URL | null = null;
+  try {
+    url = new URL(/^https?:/i.test(raw) ? raw : `https://${raw}`);
+  } catch {
+    url = null;
+  }
+
+  if (url) {
+    for (const key of ["q", "query", "ll", "center", "destination", "daddr", "sll"]) {
+      const v = url.searchParams.get(key);
+      if (!v) continue;
+      const m = v.match(/(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)/);
+      if (m) {
+        const lat = Number(m[1]);
+        const lng = Number(m[2]);
+        if (validCoord(lat, lng)) return { lat, lng, name: placeNameFromMapsPath(raw) };
+      }
+    }
+    const osm = url.hash.match(/map=\d+\/(-?\d+\.?\d*)\/(-?\d+\.?\d*)/);
+    if (osm) {
+      const lat = Number(osm[1]);
+      const lng = Number(osm[2]);
+      if (validCoord(lat, lng)) return { lat, lng };
+    }
+  }
+
+  const geo = raw.match(/geo:\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)/i);
+  if (geo) {
+    const lat = Number(geo[1]);
+    const lng = Number(geo[2]);
+    if (validCoord(lat, lng)) return { lat, lng };
+  }
+
+  const pair = raw.match(/^(-?\d+\.?\d+)\s*,\s*(-?\d+\.?\d+)$/);
+  if (pair) {
+    const lat = Number(pair[1]);
+    const lng = Number(pair[2]);
+    if (validCoord(lat, lng)) return { lat, lng };
+  }
+
+  return null;
+}

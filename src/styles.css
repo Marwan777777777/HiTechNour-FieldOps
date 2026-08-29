@@ -87,6 +87,7 @@
   border: 1px solid var(--color-line);
   border-radius: 12px;
   background: var(--color-elevated);
+  position: relative;
 }
 .ops-map .leaflet-container {
   width: 100%;
@@ -99,6 +100,88 @@
   color: var(--color-faint);
   font-size: 10px;
 }
+.htn-site-marker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+}
+.htn-site-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #54d7e7;
+  border: 2px solid #070b12;
+  box-shadow: 0 0 0 2px #54d7e7;
+  flex-shrink: 0;
+}
+.htn-site-label {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgb(7 11 18 / 0.88);
+  color: #e8edf5;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  border: 1px solid #2c3b52;
+}
+.htn-worker-marker {
+  border: 0;
+  background: transparent;
+}
+.htn-worker-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 2px solid #070b12;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.45);
+}
+.htn-worker-dot.is-on {
+  background: #6ee7b7;
+  color: #070b12;
+}
+.htn-worker-dot.is-last {
+  background: #4a8ff0;
+  color: #e8edf5;
+}
+.htn-map-legend {
+  position: absolute;
+  z-index: 500;
+  left: 10px;
+  bottom: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgb(7 11 18 / 0.88);
+  border: 1px solid #1c2738;
+  color: #e8edf5;
+  font-size: 11px;
+  font-weight: 500;
+  pointer-events: none;
+}
+.htn-map-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-inline-end: 4px;
+  vertical-align: middle;
+}
+.htn-leg-site { background: #54d7e7; }
+.htn-leg-on { background: #6ee7b7; }
+.htn-leg-last { background: #4a8ff0; }
 
 /* —— Original HiTechNour login composition —— */
 #login-screen {

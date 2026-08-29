@@ -130,10 +130,10 @@ export default defineConfig(({ command, isPreview }) => ({
   },
   resolve: { tsconfigPaths: true },
   ssr: {
-    external: ["web-push"],
+    external: ["web-push", "@electric-sql/pglite", "leaflet", "pg"],
   },
   optimizeDeps: {
-    exclude: ["web-push"],
+    exclude: ["web-push", "@electric-sql/pglite", "leaflet"],
   },
   plugins: [
     pgliteBootstrapPlugin(),
@@ -147,11 +147,6 @@ export default defineConfig(({ command, isPreview }) => ({
           nitro({
             preset: "vercel",
             serverDir: "./server",
-            rollupConfig: {
-              output: {
-                inlineDynamicImports: true,
-              },
-            },
           }),
         ]
       : []),

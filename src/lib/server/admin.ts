@@ -4,7 +4,7 @@ import { getSql } from "@/lib/db";
 import { getDailyHours, getMonthlyAttendance, overviewRoster } from "./attendance";
 import { requireAdmin } from "./admin-guard";
 import { notifyAndPush } from "./notify";
-import { PAYROLL_CAP_HOURS } from "@/lib/geo";
+import { PAYROLL_CAP_HOURS, parseGoogleMapsUrl } from "@/lib/geo";
 import type { Profile, Site } from "./types";
 
 export const adminOverview = createServerFn({ method: "GET" })
@@ -747,18 +747,60 @@ export const liveMap = createServerFn({ method: "GET" })
       full_name: string;
       lat: number;
       lng: number;
-      site_name: string;
+      site_name: string | null;
       created_at: string;
+      punch_type: string;
+      on_site: boolean;
     }>`
-      select p.user_id, p.full_name, c.lat, c.lng, s.name as site_name, c.created_at::text as created_at
+      select p.user_id, p.full_name, c.lat, c.lng, s.name as site_name,
+             c.created_at::text as created_at, c.type as punch_type,
+             (c.type = 'check_in') as on_site
       from profiles p
       join lateral (
         select type, site_id, lat, lng, created_at from checkins
-        where user_id = p.user_id
+        where user_id = p.user_id and lat is not null
         order by created_at desc, id desc
         limit 1
       ) c on true
-      join sites s on s.id = c.site_id
-      where c.type = 'check_in'`;
+      left join sites s on s.id = c.site_id
+      where p.active = true`;
     return { sites, people };
+  });
+
+export const resolveMapsLink = createServerFn({ method: "POST" })
+  .validator((d: { url: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    await requireAdmin(context.userId);
+    const raw = data.url.trim();
+    const direct = parseGoogleMapsUrl(raw);
+    if (direct) return direct;
+
+    const target = /^https?:/i.test(raw) ? raw : `https://${raw}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    try {
+      const res = await fetch(target, {
+        redirect: "follow",
+        signal: controller.signal,
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; HiTechNourOps/1.0)" },
+      });
+      const fromUrl = parseGoogleMapsUrl(res.url);
+      if (fromUrl) return fromUrl;
+      const html = await res.text();
+      const canonical = html.match(/<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)/i);
+      if (canonical?.[1]) {
+        const href = canonical[1].replaceAll("&", "&");
+        const pin = parseGoogleMapsUrl(href);
+        if (pin) return pin;
+      }
+      const meta = html.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+      if (meta) {
+        const pin = parseGoogleMapsUrl(`@${meta[1]},${meta[2]}`);
+        if (pin) return pin;
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    throw new Error("NO_COORDS");
   });

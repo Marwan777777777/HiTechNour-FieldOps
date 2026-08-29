@@ -18,7 +18,7 @@ import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recha
 import { Button } from "@/components/ui/button";
 import { Empty, FlagChip, Kicker, Panel, Stat, BrandMark } from "@/components/chrome";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cairoDate } from "@/lib/geo";
+import { cairoDate, needsMapsExpand, parseGoogleMapsUrl } from "@/lib/geo";
 import { type Locale, type Msg, t } from "@/lib/i18n";
 import {
   activityLog,
@@ -34,6 +34,7 @@ import {
   listSkills,
   listWorkers,
   liveMap,
+  resolveMapsLink,
   resetDevice,
   reviewCheckin,
   reviewReport,
@@ -248,7 +249,12 @@ function Overview({ locale }: { locale: Locale }) {
         <div className="px-4 pt-4">
           <Kicker>{t(locale, "liveMap")}</Kicker>
         </div>
-        <OpsMap sites={map.data?.sites} people={map.data?.people} className="h-80 rounded-none border-0" />
+        <OpsMap
+          sites={map.data?.sites}
+          people={map.data?.people}
+          legend
+          className="h-[28rem] rounded-none border-0"
+        />
       </Panel>
       <TeamToday locale={locale} />
     </div>
@@ -730,8 +736,26 @@ function SiteForm({
   const [lng, setLng] = useState(String(initial.lng));
   const [radius, setRadius] = useState(String(initial.radius_meters));
   const [active, setActive] = useState(initial.active);
+  const [mapsUrl, setMapsUrl] = useState("");
   const latN = Number(lat);
   const lngN = Number(lng);
+  const applyMaps = useMutation({
+    mutationFn: async (raw: string) => {
+      const local = parseGoogleMapsUrl(raw);
+      if (local) return local;
+      if (!needsMapsExpand(raw) && !/^https?:/i.test(raw.trim())) {
+        throw new Error("NO_COORDS");
+      }
+      return resolveMapsLink({ data: { url: raw } });
+    },
+    onSuccess: (pin) => {
+      setLat(pin.lat.toFixed(6));
+      setLng(pin.lng.toFixed(6));
+      if (pin.name && !name.trim()) setName(pin.name);
+      toast.success(`${pin.lat.toFixed(5)}, ${pin.lng.toFixed(5)}`);
+    },
+    onError: () => toast.error(t(locale, "mapsLinkInvalid")),
+  });
   const save = useMutation({
     mutationFn: (nextActive?: boolean) =>
       saveSite({
@@ -775,12 +799,39 @@ function SiteForm({
   return (
     <Panel className="grid gap-3">
       <h2 className="font-display text-lg font-semibold">{isNew ? t(locale, "createSite") : t(locale, "editSite")}</h2>
+      <label className="grid gap-1.5">
+        <span className="text-xs font-medium text-muted">{t(locale, "mapsLink")}</span>
+        <div className="flex gap-2">
+          <input
+            className="h-11 min-w-0 flex-1 rounded-lg border border-line bg-elevated px-3 text-sm"
+            value={mapsUrl}
+            onChange={(e) => setMapsUrl(e.target.value)}
+            onPaste={(e) => {
+              const text = e.clipboardData.getData("text");
+              if (text.trim()) {
+                setMapsUrl(text);
+                applyMaps.mutate(text);
+              }
+            }}
+            placeholder="https://maps.app.goo.gl/…"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!mapsUrl.trim() || applyMaps.isPending}
+            onClick={() => applyMaps.mutate(mapsUrl)}
+          >
+            {t(locale, "applyLink")}
+          </Button>
+        </div>
+        <span className="text-xs text-faint">{t(locale, "mapsLinkHint")}</span>
+      </label>
       <input className="h-11 rounded-lg border border-line bg-elevated px-3 text-sm" value={name} onChange={(e) => setName(e.target.value)} placeholder={t(locale, "name")} />
       <input className="h-11 rounded-lg border border-line bg-elevated px-3 text-sm" value={address} onChange={(e) => setAddress(e.target.value)} placeholder={t(locale, "address")} />
       <div className="grid grid-cols-3 gap-2">
-        <input className="h-11 rounded-lg border border-line bg-elevated px-3 font-mono text-sm" value={lat} onChange={(e) => setLat(e.target.value)} />
-        <input className="h-11 rounded-lg border border-line bg-elevated px-3 font-mono text-sm" value={lng} onChange={(e) => setLng(e.target.value)} />
-        <input className="h-11 rounded-lg border border-line bg-elevated px-3 font-mono text-sm" value={radius} onChange={(e) => setRadius(e.target.value)} />
+        <input className="h-11 rounded-lg border border-line bg-elevated px-3 font-mono text-sm" value={lat} onChange={(e) => setLat(e.target.value)} placeholder={t(locale, "lat")} />
+        <input className="h-11 rounded-lg border border-line bg-elevated px-3 font-mono text-sm" value={lng} onChange={(e) => setLng(e.target.value)} placeholder={t(locale, "lng")} />
+        <input className="h-11 rounded-lg border border-line bg-elevated px-3 font-mono text-sm" value={radius} onChange={(e) => setRadius(e.target.value)} placeholder={t(locale, "radius")} />
       </div>
       <Button
         variant="outline"

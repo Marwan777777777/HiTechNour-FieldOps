@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { addCairoDays, haversineMeters, isImpossibleTravel, isLateCheckin, isLikelySpoofedGps, primaryFlag } from "./geo.ts";
+import {
+  addCairoDays,
+  haversineMeters,
+  isImpossibleTravel,
+  isLateCheckin,
+  isLikelySpoofedGps,
+  needsMapsExpand,
+  parseGoogleMapsUrl,
+  primaryFlag,
+} from "./geo.ts";
 
 describe("haversineMeters", () => {
   it("is ~0 at the same point", () => {
@@ -67,5 +76,39 @@ describe("isLikelySpoofedGps", () => {
   });
   it("flags coarse coordinates that claim high accuracy", () => {
     assert.equal(isLikelySpoofedGps({ lat: 30.06, lng: 31.34, accuracy: 5, mock: false }), true);
+  });
+});
+
+describe("parseGoogleMapsUrl", () => {
+  it("reads @lat,lng from a place URL and the place name", () => {
+    const pin = parseGoogleMapsUrl(
+      "https://www.google.com/maps/place/HQ+Nasr+City/@30.0561,31.3395,17z",
+    );
+    assert.ok(pin);
+    assert.ok(Math.abs(pin.lat - 30.0561) < 0.0001);
+    assert.ok(Math.abs(pin.lng - 31.3395) < 0.0001);
+    assert.equal(pin.name, "HQ Nasr City");
+  });
+  it("prefers !3d!4d pin over camera @", () => {
+    const pin = parseGoogleMapsUrl(
+      "https://www.google.com/maps/place/Foo/@30.01,31.01,17z/data=!3d30.0561!4d31.3395",
+    );
+    assert.ok(pin);
+    assert.ok(Math.abs(pin.lat - 30.0561) < 0.0001);
+    assert.ok(Math.abs(pin.lng - 31.3395) < 0.0001);
+  });
+  it("reads q=lat,lng", () => {
+    const pin = parseGoogleMapsUrl("https://maps.google.com/?q=29.9285,30.9188");
+    assert.ok(pin);
+    assert.ok(Math.abs(pin.lat - 29.9285) < 0.0001);
+  });
+  it("reads a raw coordinate pair", () => {
+    const pin = parseGoogleMapsUrl("30.0074, 31.4913");
+    assert.ok(pin);
+    assert.equal(pin.lat, 30.0074);
+  });
+  it("returns null for a short link that still needs expanding", () => {
+    assert.equal(parseGoogleMapsUrl("https://maps.app.goo.gl/abc123"), null);
+    assert.equal(needsMapsExpand("https://maps.app.goo.gl/abc123"), true);
   });
 });

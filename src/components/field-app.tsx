@@ -1,5 +1,5 @@
 import { Languages, LogOut, Shield } from "lucide-react";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "sonner";
 import { signOut } from "@/lib/auth/client";
@@ -9,9 +9,10 @@ import { updateLocale } from "@/lib/server/field";
 import { getDeviceId } from "@/lib/device-bind";
 import { Button } from "@/components/ui/button";
 import { AlertsBell } from "./alerts-bell";
-import { AdminApp } from "./admin-app";
 import { BrandMark } from "./chrome";
 import { WorkerApp } from "./worker-app";
+
+const AdminApp = lazy(() => import("./admin-app").then((m) => ({ default: m.AdminApp })));
 
 const makeQueryClient = () =>
   new QueryClient({
@@ -143,7 +144,15 @@ function FieldShell({ email, displayName }: { email?: string; displayName?: stri
         </div>
       </header>
       {isAdmin ? (
-        <AdminApp home={home} locale={locale} onHome={setHome} />
+        <Suspense
+          fallback={
+            <div className="grid min-h-[40vh] place-items-center">
+              <div className="size-10 animate-pulse rounded-full border border-line bg-elevated" />
+            </div>
+          }
+        >
+          <AdminApp home={home} locale={locale} onHome={setHome} />
+        </Suspense>
       ) : (
         <WorkerApp home={home} locale={locale} onHome={setHome} />
       )}
