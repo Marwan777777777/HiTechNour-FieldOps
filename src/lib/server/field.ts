@@ -317,3 +317,21 @@ export const updateLocale = createServerFn({ method: "POST" })
     await sql`update profiles set locale = ${data.locale} where user_id = ${context.userId}`;
     return { ok: true };
   });
+
+export const saveBiometric = createServerFn({ method: "POST" })
+  .validator((d: { credentialId: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const id = data.credentialId.trim().slice(0, 255);
+    if (!id) throw new Error("BIO_MISSING");
+    const sql = await getSql();
+    await sql`
+      update profiles
+      set pending_device_webauthn_id = ${id},
+          device_webauthn_id = case
+            when device_approved then coalesce(device_webauthn_id, ${id})
+            else device_webauthn_id
+          end
+      where user_id = ${context.userId}`;
+    return { ok: true };
+  });

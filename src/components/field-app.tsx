@@ -9,6 +9,7 @@ import { updateLocale } from "@/lib/server/field";
 import { getDeviceId } from "@/lib/device-bind";
 import { Button } from "@/components/ui/button";
 import { AlertsBell } from "./alerts-bell";
+import { BiometricGate } from "./biometric-gate";
 import { BrandMark } from "./chrome";
 import { WorkerApp } from "./worker-app";
 
@@ -92,25 +93,9 @@ function FieldShell({ email, displayName }: { email?: string; displayName?: stri
     );
   }
 
-  if (!home.me.active && home.me.role !== "admin") {
-    return (
-      <div className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-5 px-6 text-center">
-        <Toaster theme="dark" position="top-center" />
-        <Shield className="size-8 text-warn" />
-        <p className="font-display text-xl font-semibold">{t(locale, "accountPending")}</p>
-        <Button className="mt-2" variant="outline" onClick={() => void boot.refetch()}>
-          {t(locale, "retry")}
-        </Button>
-        <Button variant="outline" onClick={() => void signOut()}>
-          <LogOut className="size-4" /> {t(locale, "signOut")}
-        </Button>
-      </div>
-    );
-  }
-
   const isAdmin = home.me.role === "admin";
 
-  return (
+  const shell = (
     <div className="min-h-dvh bg-bg">
       <Toaster theme="dark" position="top-center" />
       <header className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
@@ -143,7 +128,15 @@ function FieldShell({ email, displayName }: { email?: string; displayName?: stri
           </Button>
         </div>
       </header>
-      {isAdmin ? (
+      {!home.me.active && !isAdmin ? (
+        <div className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center gap-5 px-6 text-center">
+          <Shield className="size-8 text-warn" />
+          <p className="font-display text-xl font-semibold">{t(locale, "accountPending")}</p>
+          <Button className="mt-2" variant="outline" onClick={() => void boot.refetch()}>
+            {t(locale, "retry")}
+          </Button>
+        </div>
+      ) : isAdmin ? (
         <Suspense
           fallback={
             <div className="grid min-h-[40vh] place-items-center">
@@ -157,5 +150,13 @@ function FieldShell({ email, displayName }: { email?: string; displayName?: stri
         <WorkerApp home={home} locale={locale} onHome={setHome} />
       )}
     </div>
+  );
+
+  if (isAdmin) return shell;
+
+  return (
+    <BiometricGate locale={locale} userId={home.me.user_id} displayName={home.me.full_name}>
+      {shell}
+    </BiometricGate>
   );
 }
