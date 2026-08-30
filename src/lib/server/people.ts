@@ -46,7 +46,7 @@ export const createWorker = createServerFn({ method: "POST" })
         user_id, email, username, full_name, phone, role, active, device_approved
       ) values (
         ${id}, ${email}, ${username.slice(0, 40)}, ${fullName}, ${data.phone?.trim() || null},
-        ${role}, ${true}, ${false}
+        ${role}, ${true}, ${true}
       )`;
     await sql`insert into activity_logs (user_id, kind, detail)
       values (${context.userId}, ${"create_user"}, ${username})`;

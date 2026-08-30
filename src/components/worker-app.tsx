@@ -1,4 +1,4 @@
-import { Calendar, Clock, FileText, Home, MapPin, Palmtree, Shield, User } from "lucide-react";
+import { Calendar, Clock, FileText, Home, MapPin, Palmtree, User } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -26,7 +26,7 @@ import { myLeave, requestLeave } from "@/lib/server/leave";
 import { HoursHeat } from "./hours-heat";
 import { OpsMap } from "./ops-map";
 import { clientEventId } from "@/lib/utils";
-import { getDeviceId, maybeRegisterWebAuthn, punchMessage, signDeviceProof } from "@/lib/device-bind";
+import { getDeviceId, punchMessage, signDeviceProof } from "@/lib/device-bind";
 import { PushNudge } from "./alerts-bell";
 
 type Tab = "home" | "history" | "jobs" | "reports" | "me";
@@ -218,9 +218,6 @@ function HomeTab({
       if (!site || !pos) throw new Error(t(locale, "waitingLocation"));
       const eventId = clientEventId();
       const deviceId = await getDeviceId();
-      if (!home.me.device_approved) {
-        await maybeRegisterWebAuthn(deviceId);
-      }
       const proof = await signDeviceProof(
         punchMessage({
           deviceId,
@@ -285,18 +282,6 @@ function HomeTab({
       else toast.error(errorCopy(locale, msg));
     },
   });
-
-  if (!home.me.device_approved) {
-    return (
-      <div className="grid min-h-[70dvh] place-items-center">
-        <Panel className="max-w-sm text-center">
-          <Shield className="mx-auto size-8 text-warn" />
-          <h1 className="mt-3 font-display text-xl font-semibold">{t(locale, "pendingDeviceTitle")}</h1>
-          <p className="mt-2 text-sm leading-relaxed text-muted">{t(locale, "pendingDeviceBody")}</p>
-        </Panel>
-      </div>
-    );
-  }
 
   const assignment = home.todayAssign[0];
 
@@ -772,9 +757,7 @@ function MeTab({
             onChange={(e) => setPhone(e.target.value)}
           />
         </label>
-        <p className="mt-3 font-mono text-xs text-faint">
-          {home.me.device_approved ? "device bound" : t(locale, "pendingDevice")}
-        </p>
+        <p className="mt-3 font-mono text-xs text-faint">{t(locale, "bioOnPhone")}</p>
         <Button className="mt-3 w-full" disabled={save.isPending} onClick={() => save.mutate()}>
           {t(locale, "save")}
         </Button>

@@ -28,31 +28,44 @@ export const bootstrap = createServerFn({ method: "POST" })
     let existing = await profileOf(context.userId);
     if (existing && !existing.active) {
       const counts = await sql<{ c: number }>`select count(*)::int as c from profiles`;
-      // Early-tenant rescue: leftover setup admin made the operator's first
-      // real account land pending. With only a couple of profiles, promote.
       if ((counts[0]?.c ?? 0) <= 2) {
         await sql`
           update profiles
           set role = 'admin', active = true, device_approved = true, pending_device_id = null
           where user_id = ${context.userId}`;
         existing = await profileOf(context.userId);
+      } else if (existing.role === "employee") {
+        const punches = await sql<{ id: number }>`
+          select id from checkins where user_id = ${context.userId} limit 1`;
+        if (!punches[0]) {
+          await sql`
+            update profiles
+            set active = true, device_approved = true, pending_device_id = null
+            where user_id = ${context.userId}`;
+          existing = await profileOf(context.userId);
+        }
       }
+    }
+    if (existing?.active) {
+      await sql`
+        update profiles
+        set device_approved = true,
+            device_id = coalesce(device_id, ${data.deviceId ?? null}),
+            pending_device_id = null
+        where user_id = ${context.userId}`;
+      existing = await profileOf(context.userId);
     }
     if (!existing) {
       const countRows = await sql<{ c: number }>`select count(*)::int as c from profiles`;
       const role = (countRows[0]?.c ?? 0) === 0 ? "admin" : "employee";
       const name = (data.name || data.email || "Worker").slice(0, 80);
       const username = (data.email ?? name).split("@")[0].slice(0, 40);
-      const active = role === "admin";
-      const deviceApproved = role === "admin";
-      const deviceId = role === "admin" ? (data.deviceId ?? null) : null;
-      const pending = role === "admin" ? null : (data.deviceId ?? null);
       await sql`insert into profiles (
           user_id, email, username, full_name, role, device_id, pending_device_id,
           device_approved, active
         ) values (
           ${context.userId}, ${data.email ?? null}, ${username}, ${name}, ${role},
-          ${deviceId}, ${pending}, ${deviceApproved}, ${active}
+          ${data.deviceId ?? null}, ${null}, ${true}, ${true}
         )
         on conflict (user_id) do nothing`;
     }
@@ -328,10 +341,8 @@ export const saveBiometric = createServerFn({ method: "POST" })
     await sql`
       update profiles
       set pending_device_webauthn_id = ${id},
-          device_webauthn_id = case
-            when device_approved then coalesce(device_webauthn_id, ${id})
-            else device_webauthn_id
-          end
+          device_webauthn_id = coalesce(device_webauthn_id, ${id}),
+          device_approved = true
       where user_id = ${context.userId}`;
     return { ok: true };
   });

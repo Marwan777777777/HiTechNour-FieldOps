@@ -142,36 +142,24 @@ export async function processCheckin(
   const wa = payload.webauthnId ?? null;
 
   if (!signed) {
-    // Unsigned punches (legacy/offline without key) cannot bind a new phone.
-    if (!me.device_approved || !me.device_id || me.device_id !== payload.deviceId) {
-      throw new FieldError("DEVICE_PENDING", "This device is awaiting admin approval.");
+    if (me.device_id && me.device_id !== payload.deviceId) {
+      throw new FieldError("DEVICE_PENDING", "Sign in on this phone first so it can be bound.");
     }
-  } else if (!me.device_approved || !me.device_id) {
-    if (me.pending_device_id !== payload.deviceId) {
-      await sql`update profiles
-        set pending_device_id = ${payload.deviceId},
-            pending_device_public_key = ${signedPub},
-            pending_device_webauthn_id = ${wa}
-        where user_id = ${userId}`;
-    }
-    throw new FieldError("DEVICE_PENDING", "This device is awaiting admin approval.");
-  } else if (me.device_id !== payload.deviceId) {
+  } else if (
+    !me.device_id ||
+    me.device_id !== payload.deviceId ||
+    (me.device_public_key && me.device_public_key !== signedPub) ||
+    (!me.device_public_key && signedPub)
+  ) {
     await sql`update profiles
-      set pending_device_id = ${payload.deviceId},
-          pending_device_public_key = ${signedPub},
-          pending_device_webauthn_id = ${wa}
-      where user_id = ${userId}`;
-    throw new FieldError("DEVICE_PENDING", "This device is awaiting admin approval.");
-  } else if (me.device_public_key && me.device_public_key !== signedPub) {
-    await sql`update profiles
-      set pending_device_id = ${payload.deviceId},
-          pending_device_public_key = ${signedPub},
-          pending_device_webauthn_id = ${wa}
-      where user_id = ${userId}`;
-    throw new FieldError("DEVICE_PENDING", "This device is awaiting admin approval.");
-  } else if (!me.device_public_key && signedPub) {
-    await sql`update profiles set device_public_key = ${signedPub},
-      device_webauthn_id = coalesce(device_webauthn_id, ${wa})
+      set device_id = ${payload.deviceId},
+          device_public_key = coalesce(${signedPub}, device_public_key),
+          device_webauthn_id = coalesce(${wa}, device_webauthn_id),
+          pending_device_id = null,
+          pending_device_public_key = null,
+          pending_device_webauthn_id = null,
+          device_approved = true,
+          device_bound_at = coalesce(device_bound_at, now())
       where user_id = ${userId}`;
   }
 

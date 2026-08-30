@@ -27,7 +27,6 @@ import {
   activityLog,
   adminOverview,
   adminReports,
-  approveDevice,
   closeOpenShift,
   exportAttendanceCsv,
   exportPayrollCsv,
@@ -341,18 +340,15 @@ function Queue({ locale }: { locale: Locale }) {
               <li key={p.user_id} className="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-3">
                 <div>
                   <p className="text-sm font-medium">{p.full_name || p.email}</p>
-                  <p className="font-mono text-xs text-faint">
-                    {p.active ? "" : "account · "}
-                    {p.device_approved ? "" : "device"}
-                  </p>
+                  <p className="font-mono text-xs text-faint">{t(locale, "accountPending")}</p>
                 </div>
                 <Button
                   onClick={async () => {
-                    await approveDevice({ data: { userId: p.user_id } });
+                    await setWorkerActive({ data: { userId: p.user_id, active: true } });
                     refresh();
                   }}
                 >
-                  {t(locale, "approveDevice")}
+                  {t(locale, "activate")}
                 </Button>
               </li>
             ))}
@@ -442,7 +438,7 @@ function People({ locale, home }: { locale: Locale; home: HomeData }) {
                     <span className="font-mono text-xs text-faint">{loginName(row)}</span>
                   </span>
                   <span className={`text-xs ${row.active ? "text-ok" : "text-warn"}`}>
-                    {row.active ? (row.device_approved ? "ok" : "device") : "off"}
+                    {row.active ? "ok" : "off"}
                   </span>
                 </button>
               </li>
@@ -566,14 +562,6 @@ function WorkerDetail({
         <Stat label={t(locale, "monthlyHours")} value={`${data.hours.totalHours}h`} />
       </div>
       <div className="flex flex-wrap gap-2">
-        <Button
-          onClick={async () => {
-            await approveDevice({ data: { userId: u.user_id } });
-            onDone();
-          }}
-        >
-          {t(locale, "approveDevice")}
-        </Button>
         <Button
           variant="outline"
           onClick={async () => {
