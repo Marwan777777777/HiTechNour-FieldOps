@@ -2,7 +2,6 @@ import { Calendar, Clock, FileText, Home, MapPin, Palmtree, User } from "lucide-
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Radar } from "@/components/radar";
 import { Button } from "@/components/ui/button";
 import { Empty, FlagChip, Kicker, Panel } from "@/components/chrome";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -15,6 +14,7 @@ import {
   loadHistory,
   loadNotifications,
   loadReports,
+  loadTeamPunches,
   markNotificationsRead,
   submitReport,
   updateProfile,
@@ -227,7 +227,12 @@ function HomeTab({
   const site = sitesByDistance.find((s) => s.id === siteId) ?? sitesByDistance[0];
   const dist = pos && site ? haversineMeters(pos.lat, pos.lng, site.lat, site.lng) : null;
   const inside = dist != null && site ? dist <= site.radius_meters : false;
-  const ratio = site && dist != null ? dist / (site.radius_meters * 1.8) : 0.4;
+
+  const teamLog = useQuery({
+    queryKey: ["htn-team-punches"],
+    queryFn: () => loadTeamPunches(),
+    refetchInterval: 30_000,
+  });
 
   const punch = useMutation({
     mutationFn: async () => {
@@ -293,6 +298,7 @@ function HomeTab({
       };
       onHome(next);
       qc.setQueryData(["htn-home"], next);
+      void qc.invalidateQueries({ queryKey: ["htn-team-punches"] });
       toast.success(t(locale, "confirmed"));
       if (result.flag_reason) toast.message(result.flag_reason);
     },
@@ -315,37 +321,8 @@ function HomeTab({
 
       <PushNudge locale={locale} />
 
-      <div className="grid grid-cols-2 gap-3">
-        <div className="rounded-lg border border-line bg-surface px-3 py-3">
-          <p className="text-xs uppercase tracking-widest text-muted">{t(locale, "workedToday")}</p>
-          <p className="mt-1 font-mono text-xl">
-            {home.todayHours ?? 0}
-            <span className="ms-1 text-xs text-faint">{t(locale, "hoursNow")}</span>
-          </p>
-        </div>
-        <div className="rounded-lg border border-line bg-surface px-3 py-3">
-          <p className="text-xs uppercase tracking-widest text-muted">{t(locale, "today")}</p>
-          <p className="mt-1 font-mono text-xl">{home.today}</p>
-        </div>
-      </div>
-
-      <HomeFeed locale={locale} />
-
-      <Panel>
-        <Kicker>{t(locale, "assignmentToday")}</Kicker>
-        {assignment ? (
-          <p className="font-display text-lg font-semibold">
-            {assignment.site_name}
-            {assignment.task ? <span className="block text-sm font-normal text-muted">{assignment.task}</span> : null}
-          </p>
-        ) : (
-          <p className="text-sm text-muted">{t(locale, "noAssignment")}</p>
-        )}
-      </Panel>
-
       <Panel className="p-5">
-        <Radar ratio={ratio} inside={inside} locating={!pos && !locErr} />
-        <div className="mt-4 text-center">
+        <div className="text-center">
           <p className="font-display text-lg font-semibold">
             {locErr
               ? t(locale, "locDenied")
@@ -362,11 +339,15 @@ function HomeTab({
         </div>
         {site && pos ? (
           <OpsMap
-            className="mt-4 h-44"
+            className="mt-4 h-52"
             sites={[site]}
             worker={{ lat: pos.lat, lng: pos.lng }}
           />
-        ) : null}
+        ) : (
+          <div className="mt-4 grid h-52 place-items-center rounded-xl border border-line bg-elevated text-sm text-muted">
+            {t(locale, "locating")}
+          </div>
+        )}
       </Panel>
 
       <label className="block">
@@ -430,6 +411,67 @@ function HomeTab({
                     {row.status === "inside" ? t(locale, "inside") : t(locale, "outside")}
                   </span>
                   <FlagChip reason={row.flag_reason} />
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-lg border border-line bg-surface px-3 py-3">
+          <p className="text-xs uppercase tracking-widest text-muted">{t(locale, "workedToday")}</p>
+          <p className="mt-1 font-mono text-xl">
+            {home.todayHours ?? 0}
+            <span className="ms-1 text-xs text-faint">{t(locale, "hoursNow")}</span>
+          </p>
+        </div>
+        <div className="rounded-lg border border-line bg-surface px-3 py-3">
+          <p className="text-xs uppercase tracking-widest text-muted">{t(locale, "today")}</p>
+          <p className="mt-1 font-mono text-xl">{home.today}</p>
+        </div>
+      </div>
+
+      <HomeFeed locale={locale} />
+
+      <Panel>
+        <Kicker>{t(locale, "assignmentToday")}</Kicker>
+        {assignment ? (
+          <p className="font-display text-lg font-semibold">
+            {assignment.site_name}
+            {assignment.task ? <span className="block text-sm font-normal text-muted">{assignment.task}</span> : null}
+          </p>
+        ) : (
+          <p className="text-sm text-muted">{t(locale, "noAssignment")}</p>
+        )}
+      </Panel>
+
+      <section>
+        <Kicker>{t(locale, "todayPunches")}</Kicker>
+        {teamLog.isLoading ? (
+          <Skeleton className="h-32" />
+        ) : (teamLog.data?.rows ?? []).length === 0 ? (
+          <Empty>{t(locale, "emptyTimeline")}</Empty>
+        ) : (
+          <ul className="grid gap-2">
+            {teamLog.data!.rows.map((row) => (
+              <li
+                key={row.id}
+                className="flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-2.5"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{row.full_name}</p>
+                  <p className="font-mono text-xs text-faint">
+                    {row.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
+                    {" · "}
+                    {row.site_name}
+                  </p>
+                </div>
+                <div className="shrink-0 text-end">
+                  <p className="font-mono text-xs text-muted">
+                    {new Date(row.created_at).toLocaleTimeString()}
+                  </p>
+                  <p className="font-mono text-xs text-faint">{Math.round(row.distance_meters)} m</p>
                 </div>
               </li>
             ))}

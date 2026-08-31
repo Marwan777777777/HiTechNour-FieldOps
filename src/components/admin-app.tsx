@@ -250,6 +250,7 @@ function Overview({ locale }: { locale: Locale }) {
                     <td className="py-2.5 text-muted">{row.site_name}</td>
                     <td className="py-2.5 text-end font-mono text-xs text-faint">
                       {new Date(row.created_at).toLocaleTimeString()}
+                      <span className="ms-2">{Math.round(row.distance_meters)} m</span>
                       {row.stale ? (
                         <span className="ms-2 text-warn">{t(locale, "staleShift")}</span>
                       ) : (
@@ -273,6 +274,40 @@ function Overview({ locale }: { locale: Locale }) {
           )}
         </Panel>
       </div>
+      <Panel>
+        <Kicker>{t(locale, "todayPunches")}</Kicker>
+        {(d.todayPunches ?? []).length === 0 ? (
+          <Empty>{t(locale, "emptyTimeline")}</Empty>
+        ) : (
+          <ul className="grid gap-0">
+            {d.todayPunches.map((row) => (
+              <li
+                key={row.id}
+                className="flex flex-wrap items-center justify-between gap-2 border-t border-line py-2.5 text-sm"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium">
+                    {row.full_name}
+                    <span className="ms-2 text-xs font-normal text-muted">
+                      {row.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
+                      {" · "}
+                      {row.site_name}
+                    </span>
+                  </p>
+                </div>
+                <p className="font-mono text-xs text-faint">
+                  {new Date(row.created_at).toLocaleTimeString()}
+                  {" · "}
+                  {Math.round(row.distance_meters)} m
+                  {row.status === "outside" ? (
+                    <span className="ms-2 text-warn">{t(locale, "outside")}</span>
+                  ) : null}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
       <Panel className="p-0 overflow-hidden">
         <div className="px-4 pt-4">
           <Kicker>{t(locale, "liveMap")}</Kicker>
@@ -305,12 +340,30 @@ function TeamToday({ locale }: { locale: Locale }) {
               <p className="text-sm font-medium">{g.siteName === "Unassigned" ? t(locale, "unassigned") : g.siteName}</p>
               <ul className="mt-1 grid gap-1">
                 {g.members.map((m) => (
-                  <li key={m.user_id} className="flex items-center justify-between border-t border-line py-2 text-sm">
+                  <li key={m.user_id} className="flex flex-wrap items-center justify-between gap-2 border-t border-line py-2 text-sm">
                     <span>
                       {m.full_name}
                       {m.title ? <span className="text-muted"> · {m.title}</span> : null}
                     </span>
-                    <span className="font-mono text-xs text-faint">{m.attendancePct}%</span>
+                    <span className="text-end font-mono text-xs text-faint">
+                      {m.lastInAt ? (
+                        <span className="block">
+                          {t(locale, "checkIn")} {new Date(m.lastInAt).toLocaleTimeString()}
+                          {m.lastInMeters != null ? ` · ${Math.round(m.lastInMeters)} m` : ""}
+                          {m.lastInSite ? ` · ${m.lastInSite}` : ""}
+                        </span>
+                      ) : (
+                        <span className="block text-warn">{t(locale, "noCheckIn")}</span>
+                      )}
+                      {m.lastOutAt ? (
+                        <span className="block">
+                          {t(locale, "checkOut")} {new Date(m.lastOutAt).toLocaleTimeString()}
+                          {m.lastOutMeters != null ? ` · ${Math.round(m.lastOutMeters)} m` : ""}
+                          {m.lastOutSite ? ` · ${m.lastOutSite}` : ""}
+                        </span>
+                      ) : null}
+                      <span className="block">{m.attendancePct}%</span>
+                    </span>
                   </li>
                 ))}
               </ul>

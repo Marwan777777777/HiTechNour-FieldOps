@@ -134,6 +134,26 @@ export const teamRoster = createServerFn({ method: "GET" })
       list.push({ name: s.name, level: s.level });
       skillsByUser.set(s.user_id, list);
     }
+    const lastPunches = await sql<{
+      user_id: string;
+      type: string;
+      created_at: string;
+      distance_meters: number;
+      site_name: string;
+    }>`
+      select distinct on (c.user_id, c.type)
+        c.user_id, c.type, c.created_at::text as created_at, c.distance_meters, s.name as site_name
+      from checkins c
+      join sites s on s.id = c.site_id
+      where (c.created_at at time zone 'Africa/Cairo')::date = ${today}::date
+      order by c.user_id, c.type, c.created_at desc`;
+    const lastByUser = new Map<string, { in?: (typeof lastPunches)[0]; out?: (typeof lastPunches)[0] }>();
+    for (const row of lastPunches) {
+      const cur = lastByUser.get(row.user_id) ?? {};
+      if (row.type === "check_in") cur.in = row;
+      if (row.type === "check_out") cur.out = row;
+      lastByUser.set(row.user_id, cur);
+    }
     const daysByUser = new Map(attendance.map((a) => [a.user_id, a.days]));
     const daysInMonth = new Date(Number(today.slice(0, 4)), Number(today.slice(5, 7)), 0).getDate();
     const grouped: Record<string, {
@@ -142,16 +162,29 @@ export const teamRoster = createServerFn({ method: "GET" })
       title: string | null;
       skills: { name: string; level: number }[];
       attendancePct: number;
+      lastInAt: string | null;
+      lastInMeters: number | null;
+      lastInSite: string | null;
+      lastOutAt: string | null;
+      lastOutMeters: number | null;
+      lastOutSite: string | null;
     }[]> = {};
     for (const w of workers) {
       const site = siteByUser.get(w.user_id) ?? "Unassigned";
       if (!grouped[site]) grouped[site] = [];
+      const last = lastByUser.get(w.user_id);
       grouped[site].push({
         user_id: w.user_id,
         full_name: w.full_name,
         title: w.title,
         skills: skillsByUser.get(w.user_id) ?? [],
         attendancePct: Math.round(((daysByUser.get(w.user_id) ?? 0) / daysInMonth) * 100),
+        lastInAt: last?.in?.created_at ?? null,
+        lastInMeters: last?.in?.distance_meters ?? null,
+        lastInSite: last?.in?.site_name ?? null,
+        lastOutAt: last?.out?.created_at ?? null,
+        lastOutMeters: last?.out?.distance_meters ?? null,
+        lastOutSite: last?.out?.site_name ?? null,
       });
     }
     return {

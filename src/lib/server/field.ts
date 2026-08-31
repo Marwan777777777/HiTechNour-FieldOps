@@ -5,6 +5,7 @@ import { cairoDate, PAYROLL_CAP_HOURS } from "@/lib/geo";
 import { FieldError, processCheckin } from "./checkin-engine";
 import { getDailyHours, getMonthlyAttendance } from "./attendance";
 import { notifyAndPush } from "./notify";
+import { loadTodayPunches } from "./today-punches";
 import type { AssignmentRow, Profile, Site, TimelineEvent } from "./types";
 
 export type { Profile, Site, TimelineEvent, AssignmentRow };
@@ -345,4 +346,16 @@ export const saveBiometric = createServerFn({ method: "POST" })
           device_approved = true
       where user_id = ${context.userId}`;
     return { ok: true };
+  });
+
+export const loadTeamPunches = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const me = await profileOf(context.userId);
+    if (!me) throw new Error("NO_PROFILE");
+    if (!me.active && me.role !== "admin") throw new Error("ACCOUNT_PENDING");
+    const sql = await getSql();
+    const today = cairoDate();
+    const rows = await loadTodayPunches(sql, today);
+    return { rows, today };
   });
