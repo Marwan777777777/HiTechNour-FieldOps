@@ -88,7 +88,7 @@ async function loadHome(userId: string) {
       from assignments a join sites s on s.id = a.site_id
       where a.user_id = ${userId} and a.start_date <= ${today}::date and a.end_date >= ${today}::date
       order by a.start_date limit 5`,
-    sql<{ type: string }>`select type from checkins where user_id = ${userId}
+    sql<{ type: string; site_id: number }>`select type, site_id from checkins where user_id = ${userId}
       order by created_at desc, id desc limit 1`,
     sql<TimelineEvent>`
       select c.id, c.type, c.distance_meters, c.status, c.flagged, c.flag_reason,
@@ -121,6 +121,7 @@ async function loadHome(userId: string) {
     sites,
     todayAssign,
     isCheckedIn: lastCheck[0]?.type === "check_in",
+    openSiteId: lastCheck[0]?.type === "check_in" ? lastCheck[0].site_id : null,
     timeline: history,
     unread: unread[0]?.c ?? 0,
     today,

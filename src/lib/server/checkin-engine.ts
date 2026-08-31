@@ -196,12 +196,13 @@ export async function processCheckin(
 
     const prev = await tx<{
       type: string;
+      site_id: number;
       lat: number;
       lng: number;
       created_at: string;
       accuracy_meters: number | null;
     }>`
-      select type, lat, lng, created_at::text as created_at, accuracy_meters
+      select type, site_id, lat, lng, created_at::text as created_at, accuracy_meters
       from checkins where user_id = ${userId}
       order by created_at desc, id desc limit 1`;
     const previous = prev[0];
@@ -211,6 +212,9 @@ export async function processCheckin(
     }
     if (payload.type === "check_out" && previous?.type !== "check_in") {
       throw new FieldError("NOT_CHECKED_IN", "You are not currently checked in.");
+    }
+    if (payload.type === "check_out" && previous.site_id !== payload.siteId) {
+      throw new FieldError("WRONG_SITE", "Check out at the same site you checked in.");
     }
 
     const recent = await tx<{ c: number }>`
@@ -228,10 +232,10 @@ export async function processCheckin(
 
     const dist = haversineMeters(payload.lat, payload.lng, site.lat, site.lng);
     const status = dist <= site.radius_meters ? "inside" : "outside";
-    if (payload.type === "check_in" && status === "outside") {
+    if (status === "outside") {
       throw new FieldError(
         "OUTSIDE_RADIUS",
-        `You are ${Math.round(dist)} m from ${site.name}. Move inside the ${site.radius_meters} m radius to check in.`,
+        `You are ${Math.round(dist)} m from ${site.name}. Move inside the ${site.radius_meters} m radius to ${payload.type === "check_out" ? "check out" : "check in"}.`,
       );
     }
     let impossible = false;

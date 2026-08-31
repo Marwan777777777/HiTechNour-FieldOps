@@ -38,6 +38,7 @@ function errorCopy(locale: Locale, msg: string) {
   if (msg === "NOT_CHECKED_IN") return t(locale, "notIn");
   if (msg === "RATE_LIMITED") return t(locale, "slowDown");
   if (msg === "OUTSIDE_RADIUS") return t(locale, "mustBeInside");
+  if (msg === "WRONG_SITE") return t(locale, "mustSameSite");
   if (msg.startsWith("LOCKED_OUT")) return t(locale, "lockedOut");
   return msg;
 }
@@ -219,10 +220,14 @@ function HomeTab({
   }, [home.sites, pos]);
 
   useEffect(() => {
+    if (home.isCheckedIn && home.openSiteId) {
+      setSiteId(home.openSiteId);
+      return;
+    }
     if (!pos || pickedSite.current || sitesByDistance.length === 0) return;
     const closest = sitesByDistance[0];
     if (closest && closest.id !== siteId) setSiteId(closest.id);
-  }, [pos, sitesByDistance, siteId]);
+  }, [pos, sitesByDistance, siteId, home.isCheckedIn, home.openSiteId]);
 
   const site = sitesByDistance.find((s) => s.id === siteId) ?? sitesByDistance[0];
   const dist = pos && site ? haversineMeters(pos.lat, pos.lng, site.lat, site.lng) : null;
@@ -237,9 +242,11 @@ function HomeTab({
   const punch = useMutation({
     mutationFn: async () => {
       if (!site || !pos) throw new Error(t(locale, "waitingLocation"));
-      const goingIn = !home.isCheckedIn;
+      if (home.isCheckedIn && home.openSiteId && site.id !== home.openSiteId) {
+        throw new Error(t(locale, "mustSameSite"));
+      }
       const here = haversineMeters(pos.lat, pos.lng, site.lat, site.lng) <= site.radius_meters;
-      if (goingIn && !here) throw new Error(t(locale, "mustBeInside"));
+      if (!here) throw new Error(t(locale, "mustBeInside"));
       const eventId = clientEventId();
       const deviceId = await getDeviceId();
       const proof = await signDeviceProof(
@@ -271,7 +278,7 @@ function HomeTab({
         return await checkInOut({ data: payload });
       } catch (err) {
         if (typeof navigator !== "undefined" && !navigator.onLine) {
-          if (goingIn && !here) throw new Error(t(locale, "mustBeInside"));
+          if (!here) throw new Error(t(locale, "mustBeInside"));
           enqueuePunch(payload);
           setOffline(queuedCount());
           throw new Error("OFFLINE");
@@ -353,8 +360,9 @@ function HomeTab({
       <label className="block">
         <span className="text-xs font-medium text-muted">{t(locale, "site")}</span>
         <select
-          className="mt-1.5 h-11 w-full rounded-lg border border-line bg-elevated px-3 text-sm"
+          className="mt-1.5 h-11 w-full rounded-lg border border-line bg-elevated px-3 text-sm disabled:opacity-70"
           value={siteId ?? ""}
+          disabled={home.isCheckedIn}
           onChange={(e) => {
             pickedSite.current = true;
             setSiteId(Number(e.target.value));
@@ -377,12 +385,12 @@ function HomeTab({
 
       <Button
         className="h-14 w-full rounded-xl text-base"
-        disabled={punch.isPending || !pos || (!home.isCheckedIn && !inside)}
+        disabled={punch.isPending || !pos || !inside}
         onClick={() => punch.mutate()}
       >
         {punch.isPending ? "…" : home.isCheckedIn ? t(locale, "checkOut") : t(locale, "checkIn")}
       </Button>
-      {!home.isCheckedIn && pos && !inside ? (
+      {pos && !inside ? (
         <p className="text-center text-sm text-warn">{t(locale, "mustBeInside")}</p>
       ) : null}
 
