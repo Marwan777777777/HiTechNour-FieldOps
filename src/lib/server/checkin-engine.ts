@@ -228,6 +228,12 @@ export async function processCheckin(
 
     const dist = haversineMeters(payload.lat, payload.lng, site.lat, site.lng);
     const status = dist <= site.radius_meters ? "inside" : "outside";
+    if (payload.type === "check_in" && status === "outside") {
+      throw new FieldError(
+        "OUTSIDE_RADIUS",
+        `You are ${Math.round(dist)} m from ${site.name}. Move inside the ${site.radius_meters} m radius to check in.`,
+      );
+    }
     let impossible = false;
     if (previous) {
       const meters = haversineMeters(payload.lat, payload.lng, previous.lat, previous.lng);

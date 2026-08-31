@@ -1,5 +1,5 @@
 import { Calendar, Clock, FileText, Home, MapPin, Palmtree, User } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Radar } from "@/components/radar";
@@ -37,7 +37,7 @@ function errorCopy(locale: Locale, msg: string) {
   if (msg === "ALREADY_CHECKED_IN") return t(locale, "alreadyIn");
   if (msg === "NOT_CHECKED_IN") return t(locale, "notIn");
   if (msg === "RATE_LIMITED") return t(locale, "slowDown");
-  if (msg === "ON_LEAVE") return t(locale, "onLeaveToday");
+  if (msg === "OUTSIDE_RADIUS") return t(locale, "mustBeInside");
   if (msg.startsWith("LOCKED_OUT")) return t(locale, "lockedOut");
   return msg;
 }
@@ -171,6 +171,7 @@ function HomeTab({
   const [locErr, setLocErr] = useState(false);
   const [siteId, setSiteId] = useState<number | null>(home.todayAssign[0]?.site_id ?? home.sites[0]?.id ?? null);
   const [offline, setOffline] = useState(typeof navigator !== "undefined" ? queuedCount() : 0);
+  const pickedSite = useRef(false);
 
   useEffect(() => {
     if (!("geolocation" in navigator)) {
@@ -208,7 +209,22 @@ function HomeTab({
     return () => window.removeEventListener("online", flush);
   }, [locale]);
 
-  const site = home.sites.find((s) => s.id === siteId) ?? home.sites[0];
+  const sitesByDistance = useMemo(() => {
+    if (!pos) return home.sites;
+    return [...home.sites].sort(
+      (a, b) =>
+        haversineMeters(pos.lat, pos.lng, a.lat, a.lng) -
+        haversineMeters(pos.lat, pos.lng, b.lat, b.lng),
+    );
+  }, [home.sites, pos]);
+
+  useEffect(() => {
+    if (!pos || pickedSite.current || sitesByDistance.length === 0) return;
+    const closest = sitesByDistance[0];
+    if (closest && closest.id !== siteId) setSiteId(closest.id);
+  }, [pos, sitesByDistance, siteId]);
+
+  const site = sitesByDistance.find((s) => s.id === siteId) ?? sitesByDistance[0];
   const dist = pos && site ? haversineMeters(pos.lat, pos.lng, site.lat, site.lng) : null;
   const inside = dist != null && site ? dist <= site.radius_meters : false;
   const ratio = site && dist != null ? dist / (site.radius_meters * 1.8) : 0.4;
@@ -216,6 +232,9 @@ function HomeTab({
   const punch = useMutation({
     mutationFn: async () => {
       if (!site || !pos) throw new Error(t(locale, "waitingLocation"));
+      const goingIn = !home.isCheckedIn;
+      const here = haversineMeters(pos.lat, pos.lng, site.lat, site.lng) <= site.radius_meters;
+      if (goingIn && !here) throw new Error(t(locale, "mustBeInside"));
       const eventId = clientEventId();
       const deviceId = await getDeviceId();
       const proof = await signDeviceProof(
@@ -247,6 +266,7 @@ function HomeTab({
         return await checkInOut({ data: payload });
       } catch (err) {
         if (typeof navigator !== "undefined" && !navigator.onLine) {
+          if (goingIn && !here) throw new Error(t(locale, "mustBeInside"));
           enqueuePunch(payload);
           setOffline(queuedCount());
           throw new Error("OFFLINE");
@@ -354,23 +374,36 @@ function HomeTab({
         <select
           className="mt-1.5 h-11 w-full rounded-lg border border-line bg-elevated px-3 text-sm"
           value={siteId ?? ""}
-          onChange={(e) => setSiteId(Number(e.target.value))}
+          onChange={(e) => {
+            pickedSite.current = true;
+            setSiteId(Number(e.target.value));
+          }}
         >
-          {home.sites.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
+          {sitesByDistance.map((s, i) => {
+            const meters = pos ? Math.round(haversineMeters(pos.lat, pos.lng, s.lat, s.lng)) : null;
+            const tag = i === 0 && pos ? ` · ${t(locale, "closest")}` : "";
+            const distLabel = meters != null ? ` · ${meters} m` : "";
+            return (
+              <option key={s.id} value={s.id}>
+                {s.name}
+                {distLabel}
+                {tag}
+              </option>
+            );
+          })}
         </select>
       </label>
 
       <Button
         className="h-14 w-full rounded-xl text-base"
-        disabled={punch.isPending || !pos}
+        disabled={punch.isPending || !pos || (!home.isCheckedIn && !inside)}
         onClick={() => punch.mutate()}
       >
         {punch.isPending ? "…" : home.isCheckedIn ? t(locale, "checkOut") : t(locale, "checkIn")}
       </Button>
+      {!home.isCheckedIn && pos && !inside ? (
+        <p className="text-center text-sm text-warn">{t(locale, "mustBeInside")}</p>
+      ) : null}
 
       <section>
         <Kicker>{t(locale, "timeline")}</Kicker>
