@@ -1,4 +1,4 @@
-const SHELL = "htn-shell-v1";
+const SHELL = "htn-shell-v2";
 const ASSETS = "htn-assets-v1";
 const PRECACHE = [
   "/",

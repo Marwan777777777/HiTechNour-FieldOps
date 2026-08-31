@@ -68,7 +68,39 @@ function FieldShell({ email, displayName }: { email?: string; displayName?: stri
 
   useEffect(() => {
     if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
-    void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+
+    let registration: ServiceWorkerRegistration | undefined;
+    let refreshing = false;
+
+    const onControllerChange = () => {
+      if (refreshing) return;
+      refreshing = true;
+      window.location.reload();
+    };
+    const checkForUpdate = () => {
+      void registration?.update().catch(() => undefined);
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") checkForUpdate();
+    };
+
+    navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", checkForUpdate);
+
+    void navigator.serviceWorker
+      .register("/sw.js")
+      .then((reg) => {
+        registration = reg;
+        checkForUpdate();
+      })
+      .catch(() => undefined);
+
+    return () => {
+      navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", checkForUpdate);
+    };
   }, []);
 
   if (boot.isError) {
