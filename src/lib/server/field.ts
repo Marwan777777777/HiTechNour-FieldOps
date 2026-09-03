@@ -1,3 +1,5 @@
+import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
@@ -345,6 +347,87 @@ export const saveBiometric = createServerFn({ method: "POST" })
       set pending_device_webauthn_id = ${id},
           device_webauthn_id = coalesce(device_webauthn_id, ${id}),
           device_approved = true
+      where user_id = ${context.userId}`;
+    return { ok: true };
+  });
+
+/**
+ * PIN fallback for devices with no fingerprint/Face ID sensor (or none
+ * enrolled at the OS level), so BiometricGate isn't a dead end for them.
+ * Stored as `${saltHex}:${hashHex}` — never the raw PIN.
+ */
+const scryptAsync = promisify(scrypt);
+const PIN_MAX_ATTEMPTS = 5;
+const PIN_LOCK_MINUTES = 15;
+
+async function hashPin(pin: string): Promise<string> {
+  const salt = randomBytes(16);
+  const derived = (await scryptAsync(pin, salt, 32)) as Buffer;
+  return `${salt.toString("hex")}:${derived.toString("hex")}`;
+}
+
+async function verifyPinHash(pin: string, stored: string): Promise<boolean> {
+  const [saltHex, hashHex] = stored.split(":");
+  if (!saltHex || !hashHex) return false;
+  const salt = Buffer.from(saltHex, "hex");
+  const expected = Buffer.from(hashHex, "hex");
+  const derived = (await scryptAsync(pin, salt, expected.length)) as Buffer;
+  return derived.length === expected.length && timingSafeEqual(derived, expected);
+}
+
+export const getPinStatus = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const sql = await getSql();
+    const rows = await sql`select pin_hash from profiles where user_id = ${context.userId}`;
+    const row = rows[0] as { pin_hash: string | null } | undefined;
+    return { hasPin: Boolean(row?.pin_hash) };
+  });
+
+export const setDevicePin = createServerFn({ method: "POST" })
+  .validator((d: { pin: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const pin = data.pin.trim();
+    if (!/^\d{4,8}$/.test(pin)) throw new Error("PIN_INVALID");
+    const hash = await hashPin(pin);
+    const sql = await getSql();
+    await sql`
+      update profiles
+      set pin_hash = ${hash}, pin_fail_count = 0, pin_locked_until = null
+      where user_id = ${context.userId}`;
+    return { ok: true };
+  });
+
+export const verifyDevicePin = createServerFn({ method: "POST" })
+  .validator((d: { pin: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    const rows = await sql`
+      select pin_hash, pin_fail_count, pin_locked_until
+      from profiles where user_id = ${context.userId}`;
+    const row = rows[0] as
+      | { pin_hash: string | null; pin_fail_count: number; pin_locked_until: string | null }
+      | undefined;
+    if (!row?.pin_hash) throw new Error("PIN_MISSING");
+    if (row.pin_locked_until && new Date(row.pin_locked_until) > new Date()) {
+      throw new Error("PIN_LOCKED");
+    }
+    const ok = await verifyPinHash(data.pin.trim(), row.pin_hash);
+    if (!ok) {
+      const fails = row.pin_fail_count + 1;
+      const lockedUntil =
+        fails >= PIN_MAX_ATTEMPTS
+          ? new Date(Date.now() + PIN_LOCK_MINUTES * 60_000).toISOString()
+          : null;
+      await sql`
+        update profiles
+        set pin_fail_count = ${fails}, pin_locked_until = ${lockedUntil}
+        where user_id = ${context.userId}`;
+      throw new Error(lockedUntil ? "PIN_LOCKED" : "PIN_WRONG");
+    }
+    await sql`update profiles set pin_fail_count = 0, pin_locked_until = null
       where user_id = ${context.userId}`;
     return { ok: true };
   });
