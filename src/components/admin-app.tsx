@@ -33,6 +33,7 @@ import {
   forceLogout,
   listFlagged,
   listSites,
+  listSiteGroups,
   listSkills,
   listWorkers,
   liveMap,
@@ -42,6 +43,7 @@ import {
   reviewReport,
   saveAssignment,
   saveSite,
+  saveSiteGroup,
   deleteSite,
   setWorkerActive,
   deleteWorker,
@@ -757,11 +759,23 @@ function WorkerDetail({
 
 function Sites({ locale }: { locale: Locale }) {
   const q = useQuery({ queryKey: ["htn-sites"], queryFn: () => listSites() });
+  const groupsQ = useQuery({ queryKey: ["htn-site-groups"], queryFn: () => listSiteGroups() });
   const [editing, setEditing] = useState<number | "new" | null>(null);
   const current = useMemo(
     () => (typeof editing === "number" ? q.data?.rows.find((s) => s.id === editing) : null),
     [editing, q.data],
   );
+  const sections = useMemo(() => {
+    const rows = q.data?.rows ?? [];
+    const map = new Map<string, typeof rows>();
+    for (const s of rows) {
+      const key = s.group_name ?? t(locale, "ungroupedSites");
+      const list = map.get(key) ?? [];
+      list.push(s);
+      map.set(key, list);
+    }
+    return [...map.entries()];
+  }, [q.data, locale]);
   if (q.isLoading) return <Skeleton className="h-64" />;
   return (
     <div className="grid gap-6 lg:grid-cols-2">
@@ -772,31 +786,41 @@ function Sites({ locale }: { locale: Locale }) {
             {t(locale, "createSite")}
           </Button>
         </div>
-        <ul className="mt-4 grid gap-2">
-          {(q.data?.rows ?? []).map((s) => (
-            <li key={s.id}>
-              <button
-                type="button"
-                onClick={() => setEditing(s.id)}
-                className="flex w-full items-center justify-between rounded-xl border border-line bg-surface px-4 py-3 text-start"
-              >
-                <span>
-                  <span className="block text-sm font-medium">{s.name}</span>
-                  <span className="font-mono text-xs text-faint">
-                    {s.lat.toFixed(4)}, {s.lng.toFixed(4)} · {s.radius_meters}m
-                  </span>
-                </span>
-                <span className={s.active ? "text-ok" : "text-bad"}>
-                  {s.active ? t(locale, "active") : t(locale, "removed")}
-                </span>
-              </button>
-            </li>
+        <div className="mt-4 grid gap-5">
+          {sections.map(([groupName, rows]) => (
+            <div key={groupName}>
+              <p className="mb-1.5 px-1 text-xs font-medium uppercase tracking-wide text-faint">
+                {groupName} · {rows.length}
+              </p>
+              <ul className="grid gap-2">
+                {rows.map((s) => (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      onClick={() => setEditing(s.id)}
+                      className="flex w-full items-center justify-between rounded-xl border border-line bg-surface px-4 py-3 text-start"
+                    >
+                      <span>
+                        <span className="block text-sm font-medium">{s.name}</span>
+                        <span className="font-mono text-xs text-faint">
+                          {s.lat.toFixed(4)}, {s.lng.toFixed(4)} · {s.radius_meters}m
+                        </span>
+                      </span>
+                      <span className={s.active ? "text-ok" : "text-bad"}>
+                        {s.active ? t(locale, "active") : t(locale, "removed")}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ))}
-        </ul>
+        </div>
       </div>
       {editing ? (
         <SiteForm
           locale={locale}
+          groups={groupsQ.data?.rows ?? []}
           initial={
             current ?? {
               id: 0,
@@ -806,6 +830,7 @@ function Sites({ locale }: { locale: Locale }) {
               lng: 31.3395,
               radius_meters: 200,
               active: true,
+              group_id: null,
             }
           }
           isNew={editing === "new"}
@@ -826,21 +851,47 @@ function SiteForm({
   initial,
   isNew,
   onDone,
+  groups,
 }: {
   locale: Locale;
-  initial: { id: number; name: string; address: string | null; lat: number; lng: number; radius_meters: number; active: boolean };
+  initial: {
+    id: number;
+    name: string;
+    address: string | null;
+    lat: number;
+    lng: number;
+    radius_meters: number;
+    active: boolean;
+    group_id?: number | null;
+  };
   isNew: boolean;
   onDone: () => void;
+  groups: { id: number; name: string; active: boolean }[];
 }) {
+  const queryClient = useQueryClient();
   const [name, setName] = useState(initial.name);
   const [address, setAddress] = useState(initial.address ?? "");
   const [lat, setLat] = useState(String(initial.lat));
   const [lng, setLng] = useState(String(initial.lng));
   const [radius, setRadius] = useState(String(initial.radius_meters));
   const [active, setActive] = useState(initial.active);
+  const [groupId, setGroupId] = useState<number | null>(initial.group_id ?? null);
+  const [addingGroup, setAddingGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
   const [mapsUrl, setMapsUrl] = useState("");
   const latN = Number(lat);
   const lngN = Number(lng);
+  const createGroup = useMutation({
+    mutationFn: (n: string) => saveSiteGroup({ data: { name: n } }),
+    onSuccess: (res) => {
+      setGroupId(res.id);
+      setNewGroupName("");
+      setAddingGroup(false);
+      void queryClient.invalidateQueries({ queryKey: ["htn-site-groups"] });
+      toast.success(t(locale, "groupCreated"));
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Failed"),
+  });
   const applyMaps = useMutation({
     mutationFn: async (raw: string) => {
       const local = parseGoogleMapsUrl(raw);
@@ -869,6 +920,7 @@ function SiteForm({
           lng: lngN,
           radius_meters: Number(radius) || 200,
           active: nextActive ?? active,
+          group_id: groupId,
         },
       }),
     onSuccess: (_data, nextActive) => {
@@ -930,6 +982,49 @@ function SiteForm({
       </label>
       <input className="h-11 rounded-lg border border-line bg-elevated px-3 text-sm" value={name} onChange={(e) => setName(e.target.value)} placeholder={t(locale, "name")} />
       <input className="h-11 rounded-lg border border-line bg-elevated px-3 text-sm" value={address} onChange={(e) => setAddress(e.target.value)} placeholder={t(locale, "address")} />
+      <label className="grid gap-1.5">
+        <span className="text-xs font-medium text-muted">{t(locale, "siteGroup")}</span>
+        {addingGroup ? (
+          <div className="flex gap-2">
+            <input
+              className="h-11 min-w-0 flex-1 rounded-lg border border-line bg-elevated px-3 text-sm"
+              value={newGroupName}
+              onChange={(e) => setNewGroupName(e.target.value)}
+              placeholder={t(locale, "groupName")}
+              autoFocus
+            />
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!newGroupName.trim() || createGroup.isPending}
+              onClick={() => createGroup.mutate(newGroupName)}
+            >
+              {t(locale, "save")}
+            </Button>
+            <Button type="button" variant="outline" onClick={() => setAddingGroup(false)}>
+              {t(locale, "cancel")}
+            </Button>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <select
+              className="h-11 min-w-0 flex-1 rounded-lg border border-line bg-elevated px-3 text-sm"
+              value={groupId ?? ""}
+              onChange={(e) => setGroupId(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">{t(locale, "ungroupedSites")}</option>
+              {groups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+            <Button type="button" variant="outline" onClick={() => setAddingGroup(true)}>
+              {t(locale, "newSiteGroup")}
+            </Button>
+          </div>
+        )}
+      </label>
       <div className="grid grid-cols-3 gap-2">
         <input className="h-11 rounded-lg border border-line bg-elevated px-3 font-mono text-sm" value={lat} onChange={(e) => setLat(e.target.value)} placeholder={t(locale, "lat")} />
         <input className="h-11 rounded-lg border border-line bg-elevated px-3 font-mono text-sm" value={lng} onChange={(e) => setLng(e.target.value)} placeholder={t(locale, "lng")} />
