@@ -354,8 +354,11 @@ export const listSites = createServerFn({ method: "GET" })
     await requireAdmin(context.userId);
     const sql = await getSql();
     const rows = await sql<Site>`
-      select id, name, address, lat, lng, radius_meters, active
-      from sites order by name`;
+      select s.id, s.name, s.address, s.lat, s.lng, s.radius_meters, s.active,
+             s.group_id, g.name as group_name
+      from sites s
+      left join site_groups g on g.id = s.group_id
+      order by g.name nulls last, s.name`;
     return { rows };
   });
 
@@ -369,6 +372,7 @@ export const saveSite = createServerFn({ method: "POST" })
       lng: number;
       radius_meters?: number;
       active?: boolean;
+      group_id?: number | null;
     }) => d,
   )
   .middleware([authMiddleware])
@@ -386,11 +390,12 @@ export const saveSite = createServerFn({ method: "POST" })
         lat = ${data.lat},
         lng = ${data.lng},
         radius_meters = ${radius},
-        active = ${data.active ?? true}
+        active = ${data.active ?? true},
+        group_id = ${data.group_id ?? null}
         where id = ${data.id}`;
     } else {
-      await sql`insert into sites (name, address, lat, lng, radius_meters)
-        values (${name}, ${data.address ?? null}, ${data.lat}, ${data.lng}, ${radius})`;
+      await sql`insert into sites (name, address, lat, lng, radius_meters, group_id)
+        values (${name}, ${data.address ?? null}, ${data.lat}, ${data.lng}, ${radius}, ${data.group_id ?? null})`;
     }
     return { ok: true };
   });
@@ -812,4 +817,30 @@ export const resolveMapsLink = createServerFn({ method: "POST" })
       clearTimeout(timer);
     }
     throw new Error("NO_COORDS");
+  });
+
+export const listSiteGroups = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    await requireAdmin(context.userId);
+    const sql = await getSql();
+    const rows = await sql<{ id: number; name: string; active: boolean }>`
+      select id, name, active from site_groups order by name`;
+    return { rows };
+  });
+
+export const saveSiteGroup = createServerFn({ method: "POST" })
+  .validator((d: { id?: number; name: string; active?: boolean }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    await requireAdmin(context.userId);
+    const name = data.name.trim();
+    if (!name) throw new Error("Group name is required.");
+    const sql = await getSql();
+    if (data.id) {
+      await sql`update site_groups set name = ${name}, active = ${data.active ?? true} where id = ${data.id}`;
+    } else {
+      await sql`insert into site_groups (name) values (${name})`;
+    }
+    return { ok: true };
   });
