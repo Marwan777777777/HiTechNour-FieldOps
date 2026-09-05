@@ -839,8 +839,9 @@ export const saveSiteGroup = createServerFn({ method: "POST" })
     const sql = await getSql();
     if (data.id) {
       await sql`update site_groups set name = ${name}, active = ${data.active ?? true} where id = ${data.id}`;
-    } else {
-      await sql`insert into site_groups (name) values (${name})`;
+      return { id: data.id };
     }
-    return { ok: true };
+    const rows = await sql<{ id: number }>`
+      insert into site_groups (name) values (${name}) returning id`;
+    return { id: rows[0]!.id };
   });
