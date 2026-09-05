@@ -81,7 +81,7 @@ async function loadHome(userId: string) {
   if (!me) throw new Error("NO_PROFILE");
   const today = cairoDate();
 
-  const [sites, todayAssign, lastCheck, history, unread] = await Promise.all([
+  const [allSites, todayAssign, lastCheck, history, unread] = await Promise.all([
     sql<Site>`select id, name, address, lat, lng, radius_meters, active
       from sites where active = true order by name`,
     sql<AssignmentRow>`
@@ -89,7 +89,7 @@ async function loadHome(userId: string) {
              a.start_date::text as start_date, a.end_date::text as end_date
       from assignments a join sites s on s.id = a.site_id
       where a.user_id = ${userId} and a.start_date <= ${today}::date and a.end_date >= ${today}::date
-      order by a.start_date limit 5`,
+      order by a.start_date limit 20`,
     sql<{ type: string; site_id: number }>`select type, site_id from checkins where user_id = ${userId}
       order by created_at desc, id desc limit 1`,
     sql<TimelineEvent>`
@@ -102,6 +102,22 @@ async function loadHome(userId: string) {
     sql<{ c: number }>`select count(*)::int as c from notifications
       where user_id = ${userId} and read = false`,
   ]);
+
+  // Assigned-for-today workers only ever see their assigned site(s) as a
+  // check-in option - the same restriction processCheckin enforces
+  // server-side, applied here too so the dropdown never offers a site the
+  // check-in would just reject anyway. No assignment today = any active
+  // site, same as before. The currently open shift's site is always kept
+  // in the list regardless: if a reassignment happens mid-shift, the
+  // worker still needs to be able to select and close out the site they
+  // actually opened - excluding it here would make that site unselectable
+  // and deadlock their checkout against the "must be same site" check.
+  const openSiteId = lastCheck[0]?.type === "check_in" ? lastCheck[0].site_id : null;
+  const assignedSiteIds = new Set(todayAssign.map((a) => a.site_id));
+  const sites =
+    assignedSiteIds.size > 0
+      ? allSites.filter((s) => assignedSiteIds.has(s.id) || s.id === openSiteId)
+      : allSites;
 
   let todayHours = 0;
   let openSince: Date | null = null;
