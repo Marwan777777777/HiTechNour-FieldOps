@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  ACCURACY_THRESHOLD_M,
   CHECKIN_RATE_LIMIT,
   STALE_SHIFT_HOURS,
   haversineMeters,
@@ -232,7 +233,19 @@ export async function processCheckin(
 
     const dist = haversineMeters(payload.lat, payload.lng, site.lat, site.lng);
     const status = dist <= site.radius_meters ? "inside" : "outside";
-    if (status === "outside") {
+    // A fix this imprecise (network/cell-tower fallback, common when a phone
+    // is on battery-saver location mode or has "approximate location"
+    // permission instead of "precise") can be kilometers off true position
+    // through no fault of the worker. Rejecting the check-in outright on a
+    // reading this untrustworthy would block a legitimate employee standing
+    // right at the site - so only hard-block "outside" when the fix is
+    // precise enough that the verdict is actually meaningful. An unreliable
+    // fix still goes through below and comes out flagged as low_accuracy
+    // (see the reordered primaryFlag), so an admin reviews the real
+    // accuracy value instead of the app silently deciding "definitely
+    // outside" from a number it can't trust.
+    const accuracyReliable = payload.accuracy != null && payload.accuracy <= ACCURACY_THRESHOLD_M;
+    if (status === "outside" && accuracyReliable) {
       throw new FieldError(
         "OUTSIDE_RADIUS",
         `You are ${Math.round(dist)} m from ${site.name}. Move inside the ${site.radius_meters} m radius to ${payload.type === "check_out" ? "check out" : "check in"}.`,
