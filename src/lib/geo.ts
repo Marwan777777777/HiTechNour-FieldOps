@@ -126,7 +126,13 @@ export type FlagReason =
   | "low_accuracy"
   | "off_hours";
 
-/** Original production priority — first match wins, not a bag of tags. */
+/** Original production priority — first match wins, not a bag of tags.
+ * Accuracy is checked before the distance verdict: a reading too poor to
+ * trust (e.g. a network/cell-tower fallback fix, often in the hundreds or
+ * thousands of meters) shouldn't be reported as a confident "outside radius"
+ * - that tells the admin the wrong story. Report it as low_accuracy instead
+ * so review starts from "GPS was unreliable here," which is what actually
+ * happened. */
 export function primaryFlag(input: {
   status: "inside" | "outside";
   accuracy?: number | null;
@@ -138,8 +144,8 @@ export function primaryFlag(input: {
   if (!input.deviceMatched) return "device_mismatch";
   if (input.mock) return "mock_location";
   if (input.impossibleTravel) return "impossible_travel";
-  if (input.status === "outside") return "outside_radius";
   if ((input.accuracy ?? 0) > ACCURACY_THRESHOLD_M) return "low_accuracy";
+  if (input.status === "outside") return "outside_radius";
   if (input.offHours) return "off_hours";
   return null;
 }
