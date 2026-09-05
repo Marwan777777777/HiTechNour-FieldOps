@@ -75,6 +75,26 @@ export function BiometricGate({
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [phase]);
 
+  async function fallBackToPin() {
+    setError("");
+    setBusy(true);
+    try {
+      const { hasPin } = await getPinStatus();
+      setPhase(hasPin ? "pin-unlock" : "pin-enroll");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** True for the standard WebAuthn error when no usable platform
+   * authenticator actually exists - some Android builds report biometric
+   * *capability* correctly but this is what real credential creation
+   * throws when nothing is actually enrolled (no fingerprint AND no
+   * screen lock set at the OS level). Treated the same as BIO_UNSUPPORTED. */
+  function isNotSupported(err: unknown): boolean {
+    return err instanceof DOMException && err.name === "NotSupportedError";
+  }
+
   async function enroll() {
     setBusy(true);
     setError("");
@@ -85,7 +105,7 @@ export function BiometricGate({
       setPhase("ready");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
-      if (msg === "BIO_UNSUPPORTED") setPhase("pin-enroll");
+      if (msg === "BIO_UNSUPPORTED" || isNotSupported(err)) setPhase("pin-enroll");
       else setError(t(locale, "bioFailed"));
     } finally {
       setBusy(false);
@@ -102,7 +122,7 @@ export function BiometricGate({
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
       if (msg === "BIO_MISSING") setPhase("enroll");
-      else if (msg === "BIO_UNSUPPORTED") setPhase("pin-enroll");
+      else if (msg === "BIO_UNSUPPORTED" || isNotSupported(err)) setPhase("pin-enroll");
       else setError(t(locale, "bioFailed"));
     } finally {
       setBusy(false);
@@ -235,6 +255,9 @@ export function BiometricGate({
           {busy ? "…" : t(locale, "bioUnlockCta")}
         </Button>
       ) : null}
+      <Button variant="outline" disabled={busy} onClick={() => void fallBackToPin()}>
+        {t(locale, "useMyPinInstead")}
+      </Button>
       <Button variant="outline" onClick={() => void signOut()}>
         <LogOut className="size-4" /> {t(locale, "signOut")}
       </Button>
