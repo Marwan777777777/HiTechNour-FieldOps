@@ -3,6 +3,7 @@ import {
   ACCURACY_THRESHOLD_M,
   CHECKIN_RATE_LIMIT,
   STALE_SHIFT_HOURS,
+  cairoDate,
   haversineMeters,
   isImpossibleTravel,
   isLikelySpoofedGps,
@@ -192,6 +193,33 @@ export async function processCheckin(
       from sites where id = ${payload.siteId} and active = true`;
     const site = siteRows[0];
     if (!site) throw new FieldError("SITE_NOT_FOUND", "Site not found.");
+
+    // If the admin has assigned this worker to specific site(s) for today,
+    // that's the only place they can START a new check-in - not just what
+    // the dropdown happens to show, since a tampered request could
+    // otherwise send any active siteId regardless of what the UI offers.
+    // A worker with no assignment for today falls back to any active site,
+    // since not every shift is pre-assigned. This only gates check-in: a
+    // check-out must still be allowed to close whatever site the shift was
+    // actually opened at (see the WRONG_SITE check below), even if the
+    // assignment has since changed - otherwise a reassignment mid-shift
+    // would leave an open shift no one can close from the app.
+    if (payload.type === "check_in") {
+      const todaysAssignments = await tx<{ site_id: number }>`
+        select site_id from assignments
+        where user_id = ${userId}
+          and start_date <= ${cairoDate()}::date
+          and end_date >= ${cairoDate()}::date`;
+      if (
+        todaysAssignments.length > 0 &&
+        !todaysAssignments.some((a) => a.site_id === payload.siteId)
+      ) {
+        throw new FieldError(
+          "SITE_NOT_ASSIGNED",
+          "You're assigned to a different site today. Check in there instead.",
+        );
+      }
+    }
 
     await autoCloseStale(tx, userId);
 
