@@ -39,6 +39,18 @@ describe("primaryFlag", () => {
   it("flags outside radius", () => {
     assert.equal(primaryFlag({ ...base, status: "outside" }), "outside_radius");
   });
+  it("an unreliable fix reports low_accuracy even when the verdict is outside", () => {
+    // A network/cell-tower fallback fix (large accuracy radius) shouldn't be
+    // reported as a confident "outside radius" - the distance itself can't
+    // be trusted at that accuracy.
+    assert.equal(
+      primaryFlag({ ...base, status: "outside", accuracy: 2000 }),
+      "low_accuracy",
+    );
+  });
+  it("a precise fix still reports outside_radius", () => {
+    assert.equal(primaryFlag({ ...base, status: "outside", accuracy: 12 }), "outside_radius");
+  });
 });
 
 describe("isImpossibleTravel", () => {
