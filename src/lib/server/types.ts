@@ -29,6 +29,8 @@ export type Site = {
   lng: number;
   radius_meters: number;
   active: boolean;
+  group_id?: number | null;
+  group_name?: string | null;
 };
 
 export type TimelineEvent = {
