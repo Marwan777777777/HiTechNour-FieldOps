@@ -219,6 +219,40 @@ function HomeTab({
     );
   }, [home.sites, pos]);
 
+  // Group the distance-sorted list by site_groups. Grouping preserves the
+  // order sites were pushed in, so within each group the sites stay sorted
+  // by distance for free - no separate per-group sort needed. Groups
+  // themselves come out ordered by whichever group contains the closest
+  // site overall, since that's the group whose first site appears earliest
+  // in sitesByDistance.
+  const groupedSites = useMemo(() => {
+    const map = new Map<string, typeof sitesByDistance>();
+    for (const s of sitesByDistance) {
+      const key = s.group_name ?? t(locale, "ungroupedSites");
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(s);
+    }
+    return [...map.entries()];
+  }, [sitesByDistance, locale]);
+
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    // Auto-expand the group with the overall-closest site the first time
+    // groups show up, so the common case (closest site is the one you want)
+    // still needs zero taps. Doesn't fight the user's own toggling after that.
+    if (groupedSites.length && openGroups.size === 0) {
+      setOpenGroups(new Set([groupedSites[0][0]]));
+    }
+  }, [groupedSites, openGroups.size]);
+
+  const toggleGroup = (key: string) =>
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
   useEffect(() => {
     if (home.isCheckedIn && home.openSiteId) {
       setSiteId(home.openSiteId);
@@ -357,31 +391,58 @@ function HomeTab({
         )}
       </Panel>
 
-      <label className="block">
+      <div className="grid gap-2">
         <span className="text-xs font-medium text-muted">{t(locale, "site")}</span>
-        <select
-          className="mt-1.5 h-11 w-full rounded-lg border border-line bg-elevated px-3 text-sm disabled:opacity-70"
-          value={siteId ?? ""}
-          disabled={home.isCheckedIn}
-          onChange={(e) => {
-            pickedSite.current = true;
-            setSiteId(Number(e.target.value));
-          }}
-        >
-          {sitesByDistance.map((s, i) => {
-            const meters = pos ? Math.round(haversineMeters(pos.lat, pos.lng, s.lat, s.lng)) : null;
-            const tag = i === 0 && pos ? ` · ${t(locale, "closest")}` : "";
-            const distLabel = meters != null ? ` · ${meters} m` : "";
-            return (
-              <option key={s.id} value={s.id}>
-                {s.name}
-                {distLabel}
-                {tag}
-              </option>
-            );
-          })}
-        </select>
-      </label>
+        {groupedSites.map(([groupName, groupSites]) => {
+          const isOpen = openGroups.has(groupName);
+          return (
+            <div key={groupName} className="overflow-hidden rounded-lg border border-line bg-elevated">
+              <button
+                type="button"
+                onClick={() => toggleGroup(groupName)}
+                className="flex w-full items-center justify-between px-3 py-2.5 text-sm font-medium"
+                aria-expanded={isOpen}
+              >
+                <span>
+                  {groupName} · {groupSites.length}
+                </span>
+                <span className="text-xs text-muted">
+                  {isOpen ? t(locale, "collapseGroup") : t(locale, "expandGroup")}
+                </span>
+              </button>
+              {isOpen ? (
+                <div className="border-t border-line">
+                  {groupSites.map((s) => {
+                    const meters = pos ? Math.round(haversineMeters(pos.lat, pos.lng, s.lat, s.lng)) : null;
+                    const isGlobalClosest = pos && sitesByDistance[0]?.id === s.id;
+                    const selected = siteId === s.id;
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        disabled={home.isCheckedIn}
+                        onClick={() => {
+                          pickedSite.current = true;
+                          setSiteId(s.id);
+                        }}
+                        className={`flex w-full items-center justify-between border-t border-line/60 px-3 py-2.5 text-start text-sm first:border-t-0 disabled:opacity-70 ${
+                          selected ? "bg-line/40 font-semibold" : ""
+                        }`}
+                      >
+                        <span>{s.name}</span>
+                        <span className="font-mono text-xs text-muted">
+                          {meters != null ? `${meters} m` : "—"}
+                          {isGlobalClosest ? ` · ${t(locale, "closest")}` : ""}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
 
       <Button
         className="h-14 w-full rounded-xl text-base"
