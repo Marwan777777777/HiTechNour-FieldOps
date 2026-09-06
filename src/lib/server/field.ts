@@ -82,8 +82,12 @@ async function loadHome(userId: string) {
   const today = cairoDate();
 
   const [allSites, todayAssign, lastCheck, history, unread] = await Promise.all([
-    sql<Site>`select id, name, address, lat, lng, radius_meters, active
-      from sites where active = true order by name`,
+    sql<Site>`select s.id, s.name, s.address, s.lat, s.lng, s.radius_meters, s.active,
+             s.group_id, g.name as group_name
+      from sites s
+      left join site_groups g on g.id = s.group_id
+      where s.active = true
+      order by g.name nulls last, s.name`,
     sql<AssignmentRow>`
       select a.id, a.site_id, s.name as site_name, a.task,
              a.start_date::text as start_date, a.end_date::text as end_date
