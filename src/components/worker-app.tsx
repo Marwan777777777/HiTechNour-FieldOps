@@ -173,6 +173,7 @@ function HomeTab({
   const [siteId, setSiteId] = useState<number | null>(home.todayAssign[0]?.site_id ?? home.sites[0]?.id ?? null);
   const [offline, setOffline] = useState(typeof navigator !== "undefined" ? queuedCount() : 0);
   const pickedSite = useRef(false);
+  const didAutoExpand = useRef(false);
 
   useEffect(() => {
     if (!("geolocation" in navigator)) {
@@ -237,13 +238,16 @@ function HomeTab({
 
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
   useEffect(() => {
-    // Auto-expand the group with the overall-closest site the first time
-    // groups show up, so the common case (closest site is the one you want)
-    // still needs zero taps. Doesn't fight the user's own toggling after that.
-    if (groupedSites.length && openGroups.size === 0) {
+    // Auto-expand the group with the overall-closest site, but only once
+    // ever - a ref flag instead of checking openGroups.size, since size
+    // legitimately goes back to 0 whenever the user collapses their last
+    // open group, and re-checking size would silently reopen it right
+    // after they closed it.
+    if (groupedSites.length && !didAutoExpand.current) {
+      didAutoExpand.current = true;
       setOpenGroups(new Set([groupedSites[0][0]]));
     }
-  }, [groupedSites, openGroups.size]);
+  }, [groupedSites]);
 
   const toggleGroup = (key: string) =>
     setOpenGroups((prev) => {
