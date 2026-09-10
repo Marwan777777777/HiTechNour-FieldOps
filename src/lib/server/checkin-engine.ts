@@ -6,6 +6,7 @@ import {
   cairoDate,
   haversineMeters,
   isImpossibleTravel,
+  isInsideGeofence,
   isLikelySpoofedGps,
   isOffHours,
   primaryFlag,
@@ -260,7 +261,17 @@ export async function processCheckin(
       order by created_at desc, id desc limit 4`;
 
     const dist = haversineMeters(payload.lat, payload.lng, site.lat, site.lng);
-    const status = dist <= site.radius_meters ? "inside" : "outside";
+    // A raw dist <= radius comparison ignores that every GPS fix carries its
+    // own uncertainty: a "reliable" 80-90m-accuracy reading is still only
+    // known to within +/-80-90m, so a worker genuinely standing at the site
+    // can get a raw distance just outside the radius from noise alone.
+    // Crediting the reading's own accuracy as extra slack lets the GPS's
+    // uncertainty circle overlap the geofence before we call it "outside" -
+    // this is what previously made check-ins pass reliably on precise
+    // phones (10-20m accuracy) but fail intermittently on cheaper phones or
+    // near tall buildings (80-100m accuracy), for workers standing in the
+    // same spot.
+    const status = isInsideGeofence(dist, site.radius_meters, payload.accuracy) ? "inside" : "outside";
     // A fix this imprecise (network/cell-tower fallback, common when a phone
     // is on battery-saver location mode or has "approximate location"
     // permission instead of "precise") can be kilometers off true position
