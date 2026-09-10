@@ -4,6 +4,7 @@ import {
   addCairoDays,
   haversineMeters,
   isImpossibleTravel,
+  isInsideGeofence,
   isLateCheckin,
   isLikelySpoofedGps,
   needsMapsExpand,
@@ -50,6 +51,27 @@ describe("primaryFlag", () => {
   });
   it("a precise fix still reports outside_radius", () => {
     assert.equal(primaryFlag({ ...base, status: "outside", accuracy: 12 }), "outside_radius");
+  });
+});
+
+describe("isInsideGeofence", () => {
+  it("passes a precise fix well within radius", () => {
+    assert.equal(isInsideGeofence(50, 200, 12), true);
+  });
+  it("rejects a precise fix clearly outside, even with its small buffer", () => {
+    assert.equal(isInsideGeofence(500, 200, 12), false);
+  });
+  it("credits accuracy as buffer for a borderline noisy-but-reliable fix", () => {
+    // 180m raw distance, 100m radius, but 90m of accuracy uncertainty -
+    // the worker could genuinely be inside; previously this was a hard
+    // reject purely from GPS noise on a mid-range phone.
+    assert.equal(isInsideGeofence(180, 100, 90), true);
+  });
+  it("still rejects when even the full buffer can't cover the distance", () => {
+    assert.equal(isInsideGeofence(500, 100, 90), false);
+  });
+  it("caps the buffer at GEOFENCE_ACCURACY_BUFFER_CAP_M so a huge accuracy value can't swallow any distance", () => {
+    assert.equal(isInsideGeofence(5_000, 100, 4_000), false);
   });
 });
 
