@@ -55,6 +55,20 @@ export const dict = {
       "Your account is recognized, but this device is not bound yet. Ask your supervisor to approve it from the admin desk. You will be able to check in as soon as they do.",
     accountPending: "Your account is waiting for admin approval.",
     locDenied: "Location permission is required to check in.",
+    locEnableBtn: "Enable location",
+    locEnableHint: "Tap to allow location access. You'll only need to do this once.",
+    locPermDeniedTitle: "Location is blocked for this app",
+    locPermDeniedBody:
+      "Your browser is blocking location access. This isn't something the app can fix on its own — you'll need to allow it once in your browser or phone settings, then come back here.",
+    locPermStepAndroid:
+      "Android/Chrome: tap the lock or info icon next to the address bar → Permissions or Site settings → Location → set to Allow (not \"Ask every time\").",
+    locPermStepIos:
+      "iPhone/Safari: open the Settings app → Safari → Location, or tap \"aA\" in the address bar → Website Settings → Location → Allow. If this app is on your Home Screen, check Settings → [app name] → Location instead.",
+    locPermStepGeneral: "If none of that works, try fully closing the browser app and reopening this page.",
+    locRetryCheck: "I've allowed it — check again",
+    locChecking: "Checking permission…",
+    locUnavailable: "Couldn't get a GPS fix. Make sure GPS/Location Services is turned on for your phone and you have a clear view of the sky, then try again.",
+    locTimedOut: "Getting your location is taking longer than usual. Still trying…",
     flaggedQueue: "Review queue",
     noFlags: "Nothing flagged. Attendance looks clean.",
     review: "Mark reviewed",
@@ -347,6 +361,20 @@ export const dict = {
       "حسابك معروف، لكن هذا الجهاز غير مرتبط بعد. اطلب من مشرفك اعتماده من مكتب الإدارة. ستتمكن من تسجيل الحضور فور الموافقة.",
     accountPending: "حسابك بانتظار موافقة المدير.",
     locDenied: "إذن الموقع مطلوب لتسجيل الحضور.",
+    locEnableBtn: "تفعيل الموقع",
+    locEnableHint: "اضغط للسماح بالوصول إلى الموقع. ستحتاج لفعل هذا مرة واحدة فقط.",
+    locPermDeniedTitle: "الموقع محظور لهذا التطبيق",
+    locPermDeniedBody:
+      "متصفحك يمنع الوصول إلى الموقع. هذا لا يمكن للتطبيق إصلاحه من تلقاء نفسه — يجب السماح به مرة واحدة من إعدادات المتصفح أو الهاتف، ثم العودة إلى هنا.",
+    locPermStepAndroid:
+      "أندرويد/كروم: اضغط على أيقونة القفل أو المعلومات بجانب شريط العنوان ← الأذونات أو إعدادات الموقع ← الموقع الجغرافي ← اختر \"السماح\" (وليس \"السؤال في كل مرة\").",
+    locPermStepIos:
+      "آيفون/سفاري: افتح تطبيق الإعدادات ← Safari ← الموقع، أو اضغط على \"aA\" في شريط العنوان ← إعدادات الموقع الإلكتروني ← السماح. إذا كان التطبيق على الشاشة الرئيسية، تحقق من الإعدادات ← اسم التطبيق ← الموقع بدلاً من ذلك.",
+    locPermStepGeneral: "إذا لم ينجح ذلك، جرّب إغلاق تطبيق المتصفح تمامًا وإعادة فتح هذه الصفحة.",
+    locRetryCheck: "لقد سمحت به — تحقق مرة أخرى",
+    locChecking: "جارٍ التحقق من الإذن…",
+    locUnavailable: "تعذّر تحديد موقع GPS. تأكد من تفعيل خدمات الموقع/GPS على هاتفك ووجودك في مكان مكشوف، ثم حاول مرة أخرى.",
+    locTimedOut: "تحديد موقعك يستغرق وقتًا أطول من المعتاد. جارٍ المحاولة…",
     flaggedQueue: "طابور المراجعة",
     noFlags: "لا توجد أحداث معلّمة.",
     review: "تمت المراجعة",
