@@ -23,7 +23,14 @@ export function isLikelySpoofedGps(input: {
   const prev = input.previous ?? [];
   if (prev.length >= 3) {
     const accs = [acc, ...prev.map((p) => p.accuracy ?? -1)].slice(0, 4);
-    const locked = accs.every((a) => Math.abs(a - accs[0]) < 0.05 && a > 0 && a <= 15);
+    // Exact equality, not "close enough": real GPS chips report accuracy
+    // that drifts slightly fix to fix (changing satellite count/geometry),
+    // even when the phone has a strong, stable lock. A fake-GPS app is what
+    // typically hands back the same hardcoded accuracy value every single
+    // time. Requiring bit-for-bit equality keeps this catching spoofers
+    // without catching good phones that just happen to have consistently
+    // good (but not identical) accuracy.
+    const locked = accs.every((a) => a === accs[0] && a > 0 && a <= 15);
     if (locked) {
       const last = prev[0];
       const moved = haversineMeters(input.lat, input.lng, last.lat, last.lng);
@@ -43,6 +50,36 @@ export const ACCURACY_THRESHOLD_M = 100;
 export const MAX_SPEED_M_PER_H = 150_000;
 export const CHECKIN_RATE_LIMIT = 20;
 export const CHECKIN_RATE_WINDOW_MIN = 10;
+
+/** Cap on how much of a reading's reported accuracy we'll credit toward the
+ * geofence. Without a cap, a wildly imprecise "reliable-looking" reading
+ * could inflate the effective radius by a huge margin; ACCURACY_THRESHOLD_M
+ * is already the point past which we stop trusting a reading's distance at
+ * all (see primaryFlag), so it doubles as a sensible buffer ceiling. */
+export const GEOFENCE_ACCURACY_BUFFER_CAP_M = ACCURACY_THRESHOLD_M;
+
+/**
+ * Whether a reading counts as "inside" a site's geofence.
+ *
+ * A raw `distance <= radius` comparison ignores the fact that every GPS fix
+ * carries its own uncertainty: a reading with, say, 80m of accuracy is only
+ * known to within +/-80m, so a worker who is genuinely standing at the site
+ * can still get a raw distance reading just outside the radius purely from
+ * that noise. Phones with excellent chips (10-20m accuracy) rarely see this;
+ * cheaper phones or workers near tall buildings (80-100m accuracy) hit it
+ * constantly - which is exactly the "works for some employees, not others"
+ * complaint pattern this fixes. We credit the reading's own accuracy (up to
+ * the cap above) as extra slack on the radius, so the GPS's own uncertainty
+ * circle is allowed to overlap the geofence before we call it "outside".
+ */
+export function isInsideGeofence(
+  distanceMeters: number,
+  radiusMeters: number,
+  accuracy?: number | null,
+): boolean {
+  const buffer = Math.max(0, Math.min(accuracy ?? 0, GEOFENCE_ACCURACY_BUFFER_CAP_M));
+  return distanceMeters <= radiusMeters + buffer;
+}
 
 export function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6_371_000;
