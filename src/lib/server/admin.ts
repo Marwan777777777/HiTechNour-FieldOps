@@ -204,6 +204,134 @@ export const workerDetail = createServerFn({ method: "GET" })
     return { user, monthly, hours, tasks, skills, recent };
   });
 
+// Per-worker, date-range attendance browser for the admin "Attendance" tab.
+// Distinct from workerDetail's `recent` (hardcoded to the last 20 punches,
+// no date range, no per-day grouping) - this is meant for an admin who
+// wants to answer "show me everywhere Ahmed checked in during August, with
+// distances and hours" without digging through the raw activity log.
+export const workerAttendanceHistory = createServerFn({ method: "GET" })
+  .validator((d: { userId: string; from: string; to: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    await requireAdmin(context.userId);
+    const sql = await getSql();
+    const punches = await sql<{
+      id: number;
+      type: string;
+      created_at: string;
+      site_name: string;
+      distance_meters: number;
+      accuracy_meters: number | null;
+      status: string;
+      flagged: boolean;
+      flag_reason: string | null;
+      is_mock_location: boolean;
+      lat: number;
+      lng: number;
+    }>`
+      select c.id, c.type, c.created_at::text as created_at, s.name as site_name,
+             c.distance_meters, c.accuracy_meters, c.status, c.flagged, c.flag_reason,
+             c.is_mock_location, c.lat, c.lng
+      from checkins c
+      join sites s on s.id = c.site_id
+      where c.user_id = ${data.userId}
+        and c.created_at >= ${data.from}::date
+        and c.created_at < (${data.to}::date + interval '1 day')
+      order by c.created_at asc`;
+
+    // Group into Cairo calendar days and pair sequential check_in/check_out
+    // to compute hours worked per day - same pairing logic as
+    // getDailyHours() in attendance.ts, but over an arbitrary range (not
+    // just one calendar month) and keeping every raw punch alongside the
+    // computed summary instead of collapsing straight to a number.
+    const dayFmt = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo" });
+    type Punch = (typeof punches)[number];
+    const byDay = new Map<string, Punch[]>();
+    for (const p of punches) {
+      const day = dayFmt.format(new Date(p.created_at));
+      const list = byDay.get(day) ?? [];
+      list.push(p);
+      byDay.set(day, list);
+    }
+
+    const days = [...byDay.entries()]
+      .map(([day, list]) => {
+        let openSince: Date | null = null;
+        let hours = 0;
+        for (const p of list) {
+          const at = new Date(p.created_at);
+          if (p.type === "check_in") openSince = at;
+          else if (p.type === "check_out" && openSince) {
+            hours += Math.min(PAYROLL_CAP_HOURS, (at.getTime() - openSince.getTime()) / 3_600_000);
+            openSince = null;
+          }
+        }
+        const siteNames = [...new Set(list.map((p) => p.site_name))];
+        return {
+          day,
+          punches: list,
+          hours: Math.round(hours * 10) / 10,
+          openShift: openSince != null,
+          siteNames,
+          flaggedCount: list.filter((p) => p.flagged).length,
+        };
+      })
+      .sort((a, b) => (a.day < b.day ? 1 : -1)); // newest day first
+
+    const totalHours = Math.round(days.reduce((s, d) => s + d.hours, 0) * 10) / 10;
+    const flaggedCount = days.reduce((s, d) => s + d.flaggedCount, 0);
+    const openShiftDays = days.filter((d) => d.openShift).length;
+
+    return { days, summary: { daysPresent: days.length, totalHours, flaggedCount, openShiftDays } };
+  });
+
+export const workerAttendanceCsv = createServerFn({ method: "GET" })
+  .validator((d: { userId: string; from: string; to: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    await requireAdmin(context.userId);
+    const sql = await getSql();
+    const rows = await sql<{
+      created_at: string;
+      full_name: string;
+      site_name: string;
+      type: string;
+      status: string;
+      distance_meters: number;
+      accuracy_meters: number | null;
+      flagged: boolean;
+      flag_reason: string | null;
+    }>`
+      select c.created_at::text as created_at, p.full_name, s.name as site_name,
+             c.type, c.status, c.distance_meters, c.accuracy_meters, c.flagged, c.flag_reason
+      from checkins c
+      join profiles p on p.user_id = c.user_id
+      join sites s on s.id = c.site_id
+      where c.user_id = ${data.userId}
+        and c.created_at >= ${data.from}::date
+        and c.created_at < (${data.to}::date + interval '1 day')
+      order by c.created_at`;
+    const header = "time,worker,site,type,status,distance_m,accuracy_m,flagged,reason";
+    const worker = rows[0]?.full_name ?? data.userId;
+    const lines = rows.map((r) =>
+      [
+        r.created_at,
+        csvEscape(r.full_name),
+        csvEscape(r.site_name),
+        r.type,
+        r.status,
+        Math.round(r.distance_meters),
+        r.accuracy_meters != null ? Math.round(r.accuracy_meters) : "",
+        r.flagged ? "yes" : "no",
+        r.flag_reason ?? "",
+      ].join(","),
+    );
+    return {
+      csv: [header, ...lines].join("\n"),
+      filename: `attendance-${csvEscape(worker).replace(/\s+/g, "-")}-${data.from}-to-${data.to}.csv`,
+    };
+  });
+
 export const approveDevice = createServerFn({ method: "POST" })
   .validator((d: { userId: string }) => d)
   .middleware([authMiddleware])
