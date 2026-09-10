@@ -6,6 +6,7 @@ import {
   Copy,
   Download,
   Flag,
+  History,
   LayoutDashboard,
   MapPin,
   Megaphone,
@@ -48,6 +49,8 @@ import {
   setWorkerActive,
   deleteWorker,
   setWorkerSkill,
+  workerAttendanceCsv,
+  workerAttendanceHistory,
   workerDetail,
 } from "@/lib/server/admin";
 import {
@@ -70,6 +73,7 @@ type AdminTab =
   | "overview"
   | "queue"
   | "people"
+  | "attendance"
   | "schedule"
   | "sites"
   | "skills"
@@ -84,6 +88,7 @@ const NAV: { id: AdminTab; label: Msg; icon: typeof LayoutDashboard }[] = [
   { id: "overview", label: "overview", icon: LayoutDashboard },
   { id: "queue", label: "queue", icon: Flag },
   { id: "people", label: "people", icon: Users },
+  { id: "attendance", label: "attendance", icon: History },
   { id: "schedule", label: "schedule", icon: CalendarDays },
   { id: "sites", label: "sites", icon: MapPin },
   { id: "skills", label: "skills", icon: Sparkles },
@@ -177,6 +182,7 @@ export function AdminApp({
           {tab === "overview" ? <Overview locale={locale} /> : null}
           {tab === "queue" ? <Queue locale={locale} /> : null}
           {tab === "people" ? <People locale={locale} home={home} /> : null}
+          {tab === "attendance" ? <Attendance locale={locale} /> : null}
           {tab === "schedule" ? <AdminSchedule locale={locale} /> : null}
           {tab === "sites" ? <Sites locale={locale} /> : null}
           {tab === "skills" ? <Skills locale={locale} /> : null}
@@ -754,6 +760,303 @@ function WorkerDetail({
         </ul>
       </div>
     </Panel>
+  );
+}
+
+function dateNDaysAgo(n: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+function startOfWeekIso() {
+  const d = new Date();
+  const day = d.getDay(); // 0 = Sunday
+  d.setDate(d.getDate() - day);
+  return d.toISOString().slice(0, 10);
+}
+function startOfMonthIso() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
+function Attendance({ locale }: { locale: Locale }) {
+  const [q, setQ] = useState("");
+  const [selected, setSelected] = useState<{ id: string; name: string } | null>(null);
+  const [from, setFrom] = useState(dateNDaysAgo(30));
+  const [to, setTo] = useState(todayIso());
+  const [openDay, setOpenDay] = useState<string | null>(null);
+  const [mapPunch, setMapPunch] = useState<{
+    lat: number;
+    lng: number;
+    site_name: string;
+    created_at: string;
+    type: string;
+  } | null>(null);
+
+  const list = useQuery({
+    queryKey: ["htn-workers", q],
+    queryFn: () => listWorkers({ data: { q, includeInactive: true } }),
+  });
+
+  const history = useQuery({
+    queryKey: ["htn-worker-attendance", selected?.id, from, to],
+    queryFn: () => workerAttendanceHistory({ data: { userId: selected!.id, from, to } }),
+    enabled: Boolean(selected),
+  });
+
+  const applyPreset = (preset: "today" | "week" | "month" | "30") => {
+    setTo(todayIso());
+    if (preset === "today") setFrom(todayIso());
+    else if (preset === "week") setFrom(startOfWeekIso());
+    else if (preset === "month") setFrom(startOfMonthIso());
+    else setFrom(dateNDaysAgo(30));
+  };
+
+  const downloadCsv = async () => {
+    if (!selected) return;
+    const { csv, filename } = await workerAttendanceCsv({ data: { userId: selected.id, from, to } });
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.4fr)]">
+      <div>
+        <h1 className="font-display text-2xl font-semibold">{t(locale, "attendance")}</h1>
+        <input
+          className="mt-3 h-11 w-full rounded-lg border border-line bg-elevated px-3 text-sm"
+          placeholder={t(locale, "search")}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        {list.isLoading ? (
+          <Skeleton className="mt-4 h-64" />
+        ) : (
+          <ul className="mt-3 grid gap-1">
+            {(list.data?.rows ?? []).map((row) => (
+              <li key={row.user_id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelected({ id: row.user_id, name: row.full_name });
+                    setOpenDay(null);
+                  }}
+                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-start ${
+                    selected?.id === row.user_id ? "bg-elevated" : "hover:bg-surface"
+                  }`}
+                >
+                  <span>
+                    <span className="block text-sm font-medium">{row.full_name}</span>
+                    <span className="font-mono text-xs text-faint">{loginName(row)}</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div>
+        {!selected ? (
+          <Empty>{t(locale, "attPickWorker")}</Empty>
+        ) : (
+          <div className="grid gap-4">
+            <Panel className="grid gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="font-display text-lg font-semibold">{selected.name}</h2>
+                <Button variant="outline" onClick={downloadCsv}>
+                  <Download className="me-1.5 size-3.5" />
+                  {t(locale, "attDownloadCsv")}
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="grid gap-1 text-xs text-muted">
+                  {t(locale, "attFrom")}
+                  <input
+                    type="date"
+                    className="h-10 rounded-lg border border-line bg-elevated px-2 text-sm"
+                    value={from}
+                    max={to}
+                    onChange={(e) => setFrom(e.target.value)}
+                  />
+                </label>
+                <label className="grid gap-1 text-xs text-muted">
+                  {t(locale, "attTo")}
+                  <input
+                    type="date"
+                    className="h-10 rounded-lg border border-line bg-elevated px-2 text-sm"
+                    value={to}
+                    min={from}
+                    max={todayIso()}
+                    onChange={(e) => setTo(e.target.value)}
+                  />
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button variant="ghost" className="h-9 px-2.5 text-xs" onClick={() => applyPreset("today")}>
+                    {t(locale, "attPresetToday")}
+                  </Button>
+                  <Button variant="ghost" className="h-9 px-2.5 text-xs" onClick={() => applyPreset("week")}>
+                    {t(locale, "attPresetWeek")}
+                  </Button>
+                  <Button variant="ghost" className="h-9 px-2.5 text-xs" onClick={() => applyPreset("month")}>
+                    {t(locale, "attPresetMonth")}
+                  </Button>
+                  <Button variant="ghost" className="h-9 px-2.5 text-xs" onClick={() => applyPreset("30")}>
+                    {t(locale, "attPreset30")}
+                  </Button>
+                </div>
+              </div>
+            </Panel>
+
+            {history.isLoading || !history.data ? (
+              <Skeleton className="h-64" />
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  <Stat label={t(locale, "attDaysPresent")} value={history.data.summary.daysPresent} />
+                  <Stat label={t(locale, "attTotalHours")} value={`${history.data.summary.totalHours}h`} />
+                  <Stat
+                    label={t(locale, "attFlaggedCount")}
+                    value={history.data.summary.flaggedCount}
+                    warn={history.data.summary.flaggedCount > 0}
+                  />
+                  <Stat
+                    label={t(locale, "attOpenShifts")}
+                    value={history.data.summary.openShiftDays}
+                    warn={history.data.summary.openShiftDays > 0}
+                  />
+                </div>
+
+                {history.data.days.length === 0 ? (
+                  <Empty>{t(locale, "attNoData")}</Empty>
+                ) : (
+                  <div className="grid gap-2">
+                    {history.data.days.map((d) => {
+                      const isOpen = openDay === d.day;
+                      return (
+                        <div key={d.day} className="overflow-hidden rounded-lg border border-line bg-elevated">
+                          <button
+                            type="button"
+                            onClick={() => setOpenDay(isOpen ? null : d.day)}
+                            className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-start"
+                          >
+                            <div className="flex items-center gap-2">
+                              {isOpen ? <ChevronDown className="size-4 text-faint" /> : <ChevronRight className="size-4 text-faint" />}
+                              <span className="font-mono text-sm font-medium">{d.day}</span>
+                              <span className="text-xs text-faint">{d.siteNames.join(", ")}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {d.flaggedCount > 0 ? (
+                                <span className="rounded-full bg-warn/15 px-2 py-0.5 font-mono text-xs text-warn">
+                                  {d.flaggedCount} {t(locale, "attFlaggedCount").toLowerCase()}
+                                </span>
+                              ) : null}
+                              {d.openShift ? (
+                                <span className="rounded-full bg-warn/15 px-2 py-0.5 font-mono text-xs text-warn">
+                                  {t(locale, "attOpenShift")}
+                                </span>
+                              ) : null}
+                              <span className="font-mono text-sm text-muted">
+                                {d.hours} {t(locale, "attHours")}
+                              </span>
+                            </div>
+                          </button>
+                          {isOpen ? (
+                            <ul className="grid gap-1 border-t border-line px-3 py-2">
+                              {d.punches.map((p) => (
+                                <li
+                                  key={p.id}
+                                  className="flex flex-wrap items-center justify-between gap-2 py-1 text-sm"
+                                >
+                                  <span className="flex items-center gap-2">
+                                    <span className="font-medium">
+                                      {p.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
+                                    </span>
+                                    <span className="text-faint">· {p.site_name}</span>
+                                    <span className="font-mono text-xs text-faint">
+                                      {new Date(p.created_at).toLocaleTimeString(locale === "ar" ? "ar-EG" : "en-US")}
+                                    </span>
+                                  </span>
+                                  <span className="flex items-center gap-2">
+                                    <span className="font-mono text-xs text-faint">
+                                      {Math.round(p.distance_meters)} m
+                                      {p.accuracy_meters != null ? ` · ±${Math.round(p.accuracy_meters)} m` : ""}
+                                    </span>
+                                    <FlagChip reason={p.flag_reason} />
+                                    <Button
+                                      variant="ghost"
+                                      className="h-7 px-2 text-xs"
+                                      onClick={() =>
+                                        setMapPunch({
+                                          lat: p.lat,
+                                          lng: p.lng,
+                                          site_name: p.site_name,
+                                          created_at: p.created_at,
+                                          type: p.type,
+                                        })
+                                      }
+                                    >
+                                      <MapPin className="size-3.5" />
+                                    </Button>
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {mapPunch ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
+          onClick={() => setMapPunch(null)}
+        >
+          <div
+            className="w-full max-w-lg rounded-xl border border-line bg-surface p-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-sm font-medium">
+                {mapPunch.site_name} · {new Date(mapPunch.created_at).toLocaleString(locale === "ar" ? "ar-EG" : "en-US")}
+              </p>
+              <Button variant="ghost" className="h-8 px-2" onClick={() => setMapPunch(null)}>
+                {t(locale, "close")}
+              </Button>
+            </div>
+            <OpsMap
+              className="h-72"
+              people={[
+                {
+                  user_id: "punch",
+                  full_name: selected?.name ?? "",
+                  lat: mapPunch.lat,
+                  lng: mapPunch.lng,
+                  site_name: mapPunch.site_name,
+                  created_at: mapPunch.created_at,
+                  punch_type: mapPunch.type,
+                },
+              ]}
+            />
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
