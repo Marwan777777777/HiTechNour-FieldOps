@@ -1,4 +1,4 @@
-import { Calendar, Clock, FileText, Home, MapPin, Palmtree, User } from "lucide-react";
+import { Calendar, Clock, FileText, Home, MapPin, MapPinOff, Palmtree, User } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -169,34 +169,95 @@ function HomeTab({
     altitude: number | null;
     speed: number | null;
   } | null>(null);
-  const [locErr, setLocErr] = useState(false);
+  const [locErr, setLocErr] = useState<"denied" | "unavailable" | "timeout" | "unsupported" | null>(null);
+  // "unknown" while we're still asking the browser; "prompt" means we haven't
+  // asked the user yet and must wait for a real tap (see requestLocation
+  // below); "granted"/"denied" mirror the Permissions API's PermissionState.
+  const [permState, setPermState] = useState<"unknown" | "granted" | "prompt" | "denied">("unknown");
+  const watchIdRef = useRef<number | null>(null);
   const [siteId, setSiteId] = useState<number | null>(home.todayAssign[0]?.site_id ?? home.sites[0]?.id ?? null);
   const [offline, setOffline] = useState(typeof navigator !== "undefined" ? queuedCount() : 0);
   const pickedSite = useRef(false);
   const didAutoExpand = useRef(false);
 
+  const onPosition = (p: GeolocationPosition) => {
+    const coords = p.coords as GeolocationCoordinates & { mock?: boolean; isFromMockProvider?: boolean };
+    setPos({
+      lat: coords.latitude,
+      lng: coords.longitude,
+      accuracy: coords.accuracy,
+      mock: Boolean(coords.mock || coords.isFromMockProvider),
+      altitude: coords.altitude,
+      speed: coords.speed,
+    });
+    setLocErr(null);
+    setPermState("granted");
+  };
+
+  const onPositionError = (err: GeolocationPositionError) => {
+    if (err.code === err.PERMISSION_DENIED) {
+      setLocErr("denied");
+      setPermState("denied");
+    } else if (err.code === err.POSITION_UNAVAILABLE) {
+      setLocErr("unavailable");
+    } else {
+      setLocErr("timeout");
+    }
+  };
+
+  const startWatch = () => {
+    if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current);
+    watchIdRef.current = navigator.geolocation.watchPosition(onPosition, onPositionError, {
+      enableHighAccuracy: true,
+      maximumAge: 4000,
+      timeout: 12000,
+    });
+  };
+
+  // Called from a real tap (the "Enable location" button, or the "I've
+  // allowed it, check again" button after a denial). A direct user gesture
+  // is what makes mobile browsers reliably show the native permission
+  // prompt at all - firing getCurrentPosition/watchPosition automatically on
+  // mount, with no gesture behind it, is exactly what causes some phones to
+  // silently fail or re-ask every single time instead of remembering the
+  // choice.
+  const requestLocation = () => {
+    setLocErr(null);
+    startWatch();
+  };
+
   useEffect(() => {
     if (!("geolocation" in navigator)) {
-      setLocErr(true);
+      setLocErr("unsupported");
       return;
     }
-    const id = navigator.geolocation.watchPosition(
-      (p) => {
-        const coords = p.coords as GeolocationCoordinates & { mock?: boolean; isFromMockProvider?: boolean };
-        setPos({
-          lat: coords.latitude,
-          lng: coords.longitude,
-          accuracy: coords.accuracy,
-          mock: Boolean(coords.mock || coords.isFromMockProvider),
-          altitude: coords.altitude,
-          speed: coords.speed,
-        });
-        setLocErr(false);
-      },
-      () => setLocErr(true),
-      { enableHighAccuracy: true, maximumAge: 4000, timeout: 12000 },
-    );
-    return () => navigator.geolocation.clearWatch(id);
+    if (!navigator.permissions?.query) {
+      // Permissions API not available (older Safari, some WebViews) - fall
+      // back to the old behavior of just asking directly.
+      startWatch();
+      return;
+    }
+    let status: PermissionStatus | null = null;
+    navigator.permissions
+      .query({ name: "geolocation" })
+      .then((result) => {
+        status = result;
+        setPermState(result.state);
+        if (result.state === "granted") startWatch();
+        // "prompt": don't call watchPosition yet - wait for the Enable
+        // Location button so the request is tied to a tap.
+        // "denied": nothing to do here, the guidance UI below handles it.
+        result.onchange = () => {
+          setPermState(result.state);
+          if (result.state === "granted") startWatch();
+          if (result.state === "denied") setLocErr("denied");
+        };
+      })
+      .catch(() => startWatch());
+    return () => {
+      if (status) status.onchange = null;
+      if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -372,31 +433,58 @@ function HomeTab({
       <PushNudge locale={locale} />
 
       <Panel className="p-5">
-        <div className="text-center">
-          <p className="font-display text-lg font-semibold">
-            {locErr
-              ? t(locale, "locDenied")
-              : inside
-                ? t(locale, "inside")
-                : pos
-                  ? t(locale, "outside")
-                  : t(locale, "locating")}
-          </p>
-          <p className="mt-1 font-mono text-sm text-muted">
-            {dist != null ? `${Math.round(dist)} m` : "—"}
-            {pos ? ` · ±${Math.round(pos.accuracy)} m` : ""}
-          </p>
-        </div>
-        {site && pos ? (
-          <OpsMap
-            className="mt-4 h-52"
-            sites={[site]}
-            worker={{ lat: pos.lat, lng: pos.lng }}
-          />
-        ) : (
-          <div className="mt-4 grid h-52 place-items-center rounded-xl border border-line bg-elevated text-sm text-muted">
-            {t(locale, "locating")}
+        {permState === "prompt" && !pos ? (
+          <div className="grid place-items-center gap-3 py-4 text-center">
+            <MapPin className="h-8 w-8 text-accent" />
+            <p className="font-display text-lg font-semibold">{t(locale, "locEnableBtn")}</p>
+            <p className="max-w-xs text-sm text-muted">{t(locale, "locEnableHint")}</p>
+            <Button onClick={requestLocation}>{t(locale, "locEnableBtn")}</Button>
           </div>
+        ) : locErr === "denied" ? (
+          <div className="grid gap-3 py-2 text-center">
+            <MapPinOff className="mx-auto h-8 w-8 text-warn" />
+            <p className="font-display text-lg font-semibold">{t(locale, "locPermDeniedTitle")}</p>
+            <p className="text-sm text-muted">{t(locale, "locPermDeniedBody")}</p>
+            <ol className="grid gap-2 rounded-lg border border-line bg-elevated p-3 text-start text-sm text-muted">
+              <li>{t(locale, "locPermStepAndroid")}</li>
+              <li>{t(locale, "locPermStepIos")}</li>
+              <li>{t(locale, "locPermStepGeneral")}</li>
+            </ol>
+            <Button onClick={requestLocation}>{t(locale, "locRetryCheck")}</Button>
+          </div>
+        ) : (
+          <>
+            <div className="text-center">
+              <p className="font-display text-lg font-semibold">
+                {locErr === "unavailable"
+                  ? t(locale, "locUnavailable")
+                  : locErr === "unsupported"
+                    ? t(locale, "locDenied")
+                    : inside
+                      ? t(locale, "inside")
+                      : pos
+                        ? t(locale, "outside")
+                        : locErr === "timeout"
+                          ? t(locale, "locTimedOut")
+                          : t(locale, "locating")}
+              </p>
+              <p className="mt-1 font-mono text-sm text-muted">
+                {dist != null ? `${Math.round(dist)} m` : "—"}
+                {pos ? ` · ±${Math.round(pos.accuracy)} m` : ""}
+              </p>
+            </div>
+            {site && pos ? (
+              <OpsMap
+                className="mt-4 h-52"
+                sites={[site]}
+                worker={{ lat: pos.lat, lng: pos.lng }}
+              />
+            ) : (
+              <div className="mt-4 grid h-52 place-items-center rounded-xl border border-line bg-elevated text-sm text-muted">
+                {t(locale, "locating")}
+              </div>
+            )}
+          </>
         )}
       </Panel>
 
