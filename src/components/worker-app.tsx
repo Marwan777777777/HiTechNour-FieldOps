@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Empty, FlagChip, Kicker, Panel } from "@/components/chrome";
 import { Skeleton } from "@/components/ui/skeleton";
-import { haversineMeters } from "@/lib/geo";
+import { haversineMeters, isInsideGeofence } from "@/lib/geo";
 import { type Locale, type Msg, t } from "@/lib/i18n";
 import { enqueuePunch, flushQueue, queuedCount } from "@/lib/offline-queue";
 import {
@@ -269,7 +269,8 @@ function HomeTab({
 
   const site = sitesByDistance.find((s) => s.id === siteId) ?? sitesByDistance[0];
   const dist = pos && site ? haversineMeters(pos.lat, pos.lng, site.lat, site.lng) : null;
-  const inside = dist != null && site ? dist <= site.radius_meters : false;
+  const inside =
+    dist != null && site ? isInsideGeofence(dist, site.radius_meters, pos?.accuracy) : false;
 
   const teamLog = useQuery({
     queryKey: ["htn-team-punches"],
@@ -283,7 +284,11 @@ function HomeTab({
       if (home.isCheckedIn && home.openSiteId && site.id !== home.openSiteId) {
         throw new Error(t(locale, "mustSameSite"));
       }
-      const here = haversineMeters(pos.lat, pos.lng, site.lat, site.lng) <= site.radius_meters;
+      const here = isInsideGeofence(
+        haversineMeters(pos.lat, pos.lng, site.lat, site.lng),
+        site.radius_meters,
+        pos.accuracy,
+      );
       if (!here) throw new Error(t(locale, "mustBeInside"));
       const eventId = clientEventId();
       const deviceId = await getDeviceId();
