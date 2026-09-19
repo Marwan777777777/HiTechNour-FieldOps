@@ -62,6 +62,7 @@ import {
   teamRoster,
 } from "@/lib/server/people";
 import { adminListLeave, reviewLeave } from "@/lib/server/leave";
+import { exportAttendanceExcel } from "@/lib/server/attendance-excel";
 import type { HomeData } from "@/lib/server/field";
 import { AdminBroadcast } from "./admin-broadcast";
 import { AdminSchedule } from "./admin-schedule";
@@ -1732,6 +1733,16 @@ function ExportTab({ locale }: { locale: Locale }) {
     a.click();
     URL.revokeObjectURL(url);
   }
+  function downloadXlsx(base64: string, filename: string) {
+    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
   const punches = useMutation({
     mutationFn: () => exportAttendanceCsv({ data: { from, to } }),
     onSuccess: (res) => download(res.csv, res.filename),
@@ -1739,6 +1750,10 @@ function ExportTab({ locale }: { locale: Locale }) {
   const payroll = useMutation({
     mutationFn: () => exportPayrollCsv({ data: { from, to } }),
     onSuccess: (res) => download(res.csv, res.filename),
+  });
+  const attendanceSheet = useMutation({
+    mutationFn: () => exportAttendanceExcel({ data: { from, to } }),
+    onSuccess: (res) => downloadXlsx(res.base64, res.filename),
   });
   return (
     <Panel className="max-w-md grid gap-3">
@@ -1756,6 +1771,9 @@ function ExportTab({ locale }: { locale: Locale }) {
       </Button>
       <Button variant="outline" disabled={payroll.isPending} onClick={() => payroll.mutate()}>
         {t(locale, "exportPayroll")}
+      </Button>
+      <Button variant="outline" disabled={attendanceSheet.isPending} onClick={() => attendanceSheet.mutate()}>
+        {t(locale, "exportAttendanceSheet")}
       </Button>
     </Panel>
   );
