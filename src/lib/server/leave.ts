@@ -6,7 +6,7 @@ import { cairoDate } from "@/lib/geo";
 import { notifyAndPush } from "./notify";
 import type { Profile } from "./types";
 
-const KINDS = new Set(["annual", "sick", "day_off", "emergency"]);
+const KINDS = new Set(["annual", "sick", "day_off", "emergency", "rest"]);
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export async function approvedLeaveToday(sql: Awaited<ReturnType<typeof getSql>>, userId: string) {
@@ -104,6 +104,27 @@ export const adminListLeave = createServerFn({ method: "GET" })
       order by (l.status = 'pending') desc, l.created_at desc
       limit 80`;
     return { rows };
+  });
+
+// Lets an admin mark a leave/rest day directly for a worker, skipping the
+// request→approve flow (already approved). Used for the attendance report's
+// راحة / إجازة statuses when admin decides the day, rather than the worker
+// requesting it.
+export const adminSetLeave = createServerFn({ method: "POST" })
+  .validator((d: { userId: string; kind: string; startDate: string; endDate: string; reason?: string }) => d)
+  .middleware([adminMiddleware])
+  .handler(async ({ context, data }) => {
+    if (!KINDS.has(data.kind)) throw new Error("Invalid leave type.");
+    if (!DATE.test(data.startDate) || !DATE.test(data.endDate)) throw new Error("Dates required.");
+    if (data.endDate < data.startDate) throw new Error("End date must be on or after start.");
+    const reason = (data.reason ?? "").trim().slice(0, 500);
+    const sql = await getSql();
+    await sql`
+      insert into leave_requests (user_id, kind, start_date, end_date, reason, status, reviewed_by, reviewed_at)
+      values (${data.userId}, ${data.kind}, ${data.startDate}::date, ${data.endDate}::date, ${reason}, 'approved', ${context.userId}, now())`;
+    await sql`insert into activity_logs (user_id, kind, detail)
+      values (${context.userId}, ${"admin_set_leave"}, ${`${data.userId}: ${data.kind} ${data.startDate} → ${data.endDate}`})`;
+    return { ok: true };
   });
 
 export const reviewLeave = createServerFn({ method: "POST" })
