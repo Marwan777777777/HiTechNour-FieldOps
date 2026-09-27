@@ -289,7 +289,7 @@ function Overview({ locale }: { locale: Locale }) {
         <Stat label={t(locale, "flaggedQueue")} value={d.flagged} warn={d.flagged > 0} />
         <Stat label={t(locale, "pendingLeave")} value={d.pendingLeave} warn={d.pendingLeave > 0} />
       </div>
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div>
         <Panel>
           <Kicker>{t(locale, "weekly")}</Kicker>
           <div className="h-48">
@@ -307,42 +307,6 @@ function Overview({ locale }: { locale: Locale }) {
             </ResponsiveContainer>
           </div>
         </Panel>
-        <Panel>
-          <Kicker>{t(locale, "onSiteNow")}</Kicker>
-          {d.onSite.length === 0 ? (
-            <Empty>{t(locale, "emptyTimeline")}</Empty>
-          ) : (
-            <table className="w-full text-sm">
-              <tbody>
-                {d.onSite.map((row) => (
-                  <tr key={row.user_id} className="border-t border-line">
-                    <td className="py-2.5 font-medium">{row.full_name}</td>
-                    <td className="py-2.5 text-muted">{row.site_name}</td>
-                    <td className="py-2.5 text-end font-mono text-xs text-faint">
-                      {new Date(row.created_at).toLocaleTimeString()}
-                      <span className="ms-2">{Math.round(row.distance_meters)} m</span>
-                      {row.stale ? (
-                        <span className="ms-2 text-warn">{t(locale, "staleShift")}</span>
-                      ) : (
-                        <span className="ms-2">{Math.round(row.hours_open * 10) / 10}h</span>
-                      )}
-                    </td>
-                    <td className="py-2.5 text-end">
-                      <Button
-                        variant="ghost"
-                        className="h-8 px-2 text-xs"
-                        disabled={closeShift.isPending}
-                        onClick={() => closeShift.mutate(row.user_id)}
-                      >
-                        {t(locale, "closeShift")}
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Panel>
       </div>
       <Panel>
         <Kicker>{t(locale, "todayPunches")}</Kicker>
@@ -353,7 +317,9 @@ function Overview({ locale }: { locale: Locale }) {
             {d.todayPunches.map((row) => (
               <li
                 key={row.id}
-                className="flex flex-wrap items-center justify-between gap-2 border-t border-line py-2.5 text-sm"
+                className={`flex flex-wrap items-center justify-between gap-2 border-t border-line py-2.5 text-sm ${
+                  row.isOpenShift ? "bg-elevated/40" : ""
+                }`}
               >
                 <div className="min-w-0">
                   <p className="font-medium">
@@ -363,16 +329,33 @@ function Overview({ locale }: { locale: Locale }) {
                       {" · "}
                       {row.site_name}
                     </span>
+                    {row.isOpenShift ? (
+                      <span className={`ms-2 text-xs ${row.stale ? "text-warn" : "text-ok"}`}>
+                        {row.stale ? t(locale, "staleShift") : `${Math.round((row.hoursOpen ?? 0) * 10) / 10}h`}
+                      </span>
+                    ) : null}
                   </p>
                 </div>
-                <p className="font-mono text-xs text-faint">
-                  {new Date(row.created_at).toLocaleTimeString()}
-                  {" · "}
-                  {Math.round(row.distance_meters)} m
-                  {row.status === "outside" ? (
-                    <span className="ms-2 text-warn">{t(locale, "outside")}</span>
+                <div className="flex shrink-0 items-center gap-3">
+                  <p className="font-mono text-xs text-faint">
+                    {new Date(row.created_at).toLocaleTimeString()}
+                    {" · "}
+                    {Math.round(row.distance_meters)} m
+                    {row.status === "outside" ? (
+                      <span className="ms-2 text-warn">{t(locale, "outside")}</span>
+                    ) : null}
+                  </p>
+                  {row.isOpenShift ? (
+                    <Button
+                      variant="ghost"
+                      className="h-8 px-2 text-xs"
+                      disabled={closeShift.isPending}
+                      onClick={() => closeShift.mutate(row.user_id)}
+                    >
+                      {t(locale, "closeShift")}
+                    </Button>
                   ) : null}
-                </p>
+                </div>
               </li>
             ))}
           </ul>
