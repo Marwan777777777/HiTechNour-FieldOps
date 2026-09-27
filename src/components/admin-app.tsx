@@ -732,8 +732,16 @@ function WorkerDetail({
             } catch (e) {
               const msg = e instanceof Error ? e.message : "";
               if (msg.startsWith("HAS_ATTENDANCE_HISTORY")) {
-                toast.error(t(locale, "workerHasHistoryDeactivated"));
-                await setWorkerActive({ data: { userId: u.user_id, active: false } });
+                // Deleting is blocked by default because it also erases
+                // payroll/attendance history — offer that as an explicit,
+                // separate choice instead of silently just deactivating.
+                if (window.confirm(t(locale, "confirmForceDeleteWorker"))) {
+                  await deleteWorker({ data: { userId: u.user_id, force: true } });
+                  toast.success(t(locale, "workerDeleted"));
+                } else {
+                  toast.error(t(locale, "workerHasHistoryDeactivated"));
+                  await setWorkerActive({ data: { userId: u.user_id, active: false } });
+                }
                 onDone();
               } else {
                 toast.error(msg || "Failed");
