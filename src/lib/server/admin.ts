@@ -16,7 +16,7 @@ export const adminOverview = createServerFn({ method: "GET" })
     const roster = await overviewRoster(sql);
 
     const today = roster.today;
-    const [onSite, todayPunches, flagged, pending, openReports, pendingLeave] = await Promise.all([
+    const [onSite, todayPunchesRaw, flagged, pending, openReports, pendingLeave] = await Promise.all([
       sql<{
         user_id: string;
         full_name: string;
@@ -48,9 +48,25 @@ export const adminOverview = createServerFn({ method: "GET" })
       sql<{ c: number }>`select count(*)::int as c from leave_requests where status = 'pending'`,
     ]);
 
+    // "On site now" and "Today's punches" used to be two separate panels
+    // showing almost the same rows (today's check-ins), which is exactly
+    // what made them feel redundant side by side. This folds the "still
+    // open" info (hours open / stale / close-shift) onto the matching
+    // check-in row in the punches feed instead of listing it twice.
+    const openByUser = new Map(onSite.map((o) => [o.user_id, o]));
+    const todayPunches = todayPunchesRaw.map((row) => {
+      const open = row.type === "check_in" ? openByUser.get(row.user_id) : undefined;
+      const isOpenShift = Boolean(open && open.created_at === row.created_at);
+      return {
+        ...row,
+        isOpenShift,
+        hoursOpen: isOpenShift ? open!.hours_open : null,
+        stale: isOpenShift ? open!.stale : false,
+      };
+    });
+
     return {
       ...roster,
-      onSite,
       todayPunches,
       flagged: flagged[0]?.c ?? 0,
       pending: pending[0]?.c ?? 0,
