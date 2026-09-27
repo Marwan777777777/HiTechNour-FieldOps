@@ -1,297 +1,153 @@
-export const STALE_SHIFT_HOURS = 12;
-export const PAYROLL_CAP_HOURS = 12;
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import {
+  addCairoDays,
+  haversineMeters,
+  isImpossibleTravel,
+  isInsideGeofence,
+  isLateCheckin,
+  isLikelySpoofedGps,
+  needsMapsExpand,
+  parseGoogleMapsUrl,
+  primaryFlag,
+} from "./geo.ts";
 
-export function decimalPlaces(n: number): number {
-  const s = Math.abs(n).toString();
-  const frac = s.split(".")[1] ?? "";
-  return frac.replace(/0+$/, "").length;
-}
+describe("haversineMeters", () => {
+  it("is ~0 at the same point", () => {
+    assert.ok(haversineMeters(30.0561, 31.3395, 30.0561, 31.3395) < 1);
+  });
+  it("measures Nasr City to New Cairo on the order of kilometres", () => {
+    const m = haversineMeters(30.0561, 31.3395, 30.0074, 31.4913);
+    assert.ok(m > 10_000 && m < 30_000, `got ${m}`);
+  });
+});
 
-export function isLikelySpoofedGps(input: {
-  lat: number;
-  lng: number;
-  accuracy?: number | null;
-  mock?: boolean;
-  speed?: number | null;
-  previous?: { lat: number; lng: number; accuracy?: number | null }[];
-}): boolean {
-  if (input.mock) return true;
-  const acc = input.accuracy ?? 999;
-  let hits = 0;
-  if (acc === 0) hits += 2;
-  if (acc > 0 && acc < 25 && decimalPlaces(input.lat) <= 2 && decimalPlaces(input.lng) <= 2) hits += 2;
-  const prev = input.previous ?? [];
-  if (prev.length >= 3) {
-    const accs = [acc, ...prev.map((p) => p.accuracy ?? -1)].slice(0, 4);
-    // Exact equality, not "close enough": real GPS chips report accuracy
-    // that drifts slightly fix to fix (changing satellite count/geometry),
-    // even when the phone has a strong, stable lock. A fake-GPS app is what
-    // typically hands back the same hardcoded accuracy value every single
-    // time. Requiring bit-for-bit equality keeps this catching spoofers
-    // without catching good phones that just happen to have consistently
-    // good (but not identical) accuracy.
-    const locked = accs.every((a) => a === accs[0] && a > 0 && a <= 15);
-    if (locked) {
-      const last = prev[0];
-      const moved = haversineMeters(input.lat, input.lng, last.lat, last.lng);
-      if (moved > 200) hits += 1;
-    }
-  }
-  if (prev[0] && (input.speed === 0 || input.speed == null)) {
-    const moved = haversineMeters(input.lat, input.lng, prev[0].lat, prev[0].lng);
-    if (moved > 800 && acc < 20) hits += 1;
-  }
-  return hits >= 2;
-}
-
-export const WORK_START_HOUR = 6;
-export const WORK_END_HOUR = 20;
-export const ACCURACY_THRESHOLD_M = 100;
-export const MAX_SPEED_M_PER_H = 150_000;
-export const CHECKIN_RATE_LIMIT = 20;
-export const CHECKIN_RATE_WINDOW_MIN = 10;
-
-/** Cap on how much of a reading's reported accuracy we'll credit toward the
- * geofence. Without a cap, a wildly imprecise "reliable-looking" reading
- * could inflate the effective radius by a huge margin; ACCURACY_THRESHOLD_M
- * is already the point past which we stop trusting a reading's distance at
- * all (see primaryFlag), so it doubles as a sensible buffer ceiling. */
-export const GEOFENCE_ACCURACY_BUFFER_CAP_M = ACCURACY_THRESHOLD_M;
-
-/**
- * Whether a reading counts as "inside" a site's geofence.
- *
- * A raw `distance <= radius` comparison ignores the fact that every GPS fix
- * carries its own uncertainty: a reading with, say, 80m of accuracy is only
- * known to within +/-80m, so a worker who is genuinely standing at the site
- * can still get a raw distance reading just outside the radius purely from
- * that noise. Phones with excellent chips (10-20m accuracy) rarely see this;
- * cheaper phones or workers near tall buildings (80-100m accuracy) hit it
- * constantly - which is exactly the "works for some employees, not others"
- * complaint pattern this fixes. We credit the reading's own accuracy (up to
- * the cap above) as extra slack on the radius, so the GPS's own uncertainty
- * circle is allowed to overlap the geofence before we call it "outside".
- */
-export function isInsideGeofence(
-  distanceMeters: number,
-  radiusMeters: number,
-  accuracy?: number | null,
-): boolean {
-  const buffer = Math.max(0, Math.min(accuracy ?? 0, GEOFENCE_ACCURACY_BUFFER_CAP_M));
-  return distanceMeters <= radiusMeters + buffer;
-}
-
-export function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6_371_000;
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
-}
-
-export function cairoHour(at = new Date()): number {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Africa/Cairo",
-    hour: "numeric",
-    hourCycle: "h23",
-  }).formatToParts(at);
-  return Number(parts.find((p) => p.type === "hour")?.value ?? at.getUTCHours());
-}
-
-export function cairoDate(at = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Africa/Cairo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(at);
-}
-
-export const LATE_CUTOFF_HOUR = 11;
-export const LATE_CUTOFF_MINUTE = 0;
-
-export function cairoTimeParts(at = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Africa/Cairo",
-    hour: "numeric",
-    minute: "numeric",
-    hourCycle: "h23",
-  }).formatToParts(at);
-  return {
-    hour: Number(parts.find((p) => p.type === "hour")?.value ?? 0),
-    minute: Number(parts.find((p) => p.type === "minute")?.value ?? 0),
+describe("primaryFlag", () => {
+  const base = {
+    status: "inside" as const,
+    accuracy: 12,
+    mock: false,
+    deviceMatched: true,
+    offHours: false,
+    impossibleTravel: false,
   };
-}
-
-export function isLateCheckin(at: Date): boolean {
-  const { hour, minute } = cairoTimeParts(at);
-  return hour > LATE_CUTOFF_HOUR || (hour === LATE_CUTOFF_HOUR && minute > LATE_CUTOFF_MINUTE);
-}
-
-/** Calendar arithmetic on a Cairo YYYY-MM-DD string. */
-export function addCairoDays(dateStr: string, delta: number): string {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d + delta));
-  const yyyy = dt.getUTCFullYear();
-  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(dt.getUTCDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-export function isOffHours(at = new Date()): boolean {
-  const h = cairoHour(at);
-  return h < WORK_START_HOUR || h >= WORK_END_HOUR;
-}
-
-export function isImpossibleTravel(
-  meters: number,
-  hours: number,
-  maxMPerH = MAX_SPEED_M_PER_H,
-): boolean {
-  if (hours <= 0) return meters > 200;
-  return meters / hours > maxMPerH;
-}
-
-export type FlagReason =
-  | "device_mismatch"
-  | "mock_location"
-  | "impossible_travel"
-  | "outside_radius"
-  | "low_accuracy"
-  | "off_hours";
-
-/** Original production priority — first match wins, not a bag of tags.
- * Accuracy is checked before the distance verdict: a reading too poor to
- * trust (e.g. a network/cell-tower fallback fix, often in the hundreds or
- * thousands of meters) shouldn't be reported as a confident "outside radius"
- * - that tells the admin the wrong story. Report it as low_accuracy instead
- * so review starts from "GPS was unreliable here," which is what actually
- * happened. */
-export function primaryFlag(input: {
-  status: "inside" | "outside";
-  accuracy?: number | null;
-  mock?: boolean;
-  deviceMatched: boolean;
-  offHours: boolean;
-  impossibleTravel: boolean;
-}): FlagReason | null {
-  if (!input.deviceMatched) return "device_mismatch";
-  if (input.mock) return "mock_location";
-  if (input.impossibleTravel) return "impossible_travel";
-  if ((input.accuracy ?? 0) > ACCURACY_THRESHOLD_M) return "low_accuracy";
-  if (input.status === "outside") return "outside_radius";
-  if (input.offHours) return "off_hours";
-  return null;
-}
-
-export type MapsPin = { lat: number; lng: number; name?: string };
-
-function validCoord(lat: number, lng: number): boolean {
-  return (
-    Number.isFinite(lat) &&
-    Number.isFinite(lng) &&
-    Math.abs(lat) <= 90 &&
-    Math.abs(lng) <= 180 &&
-    !(lat === 0 && lng === 0)
-  );
-}
-
-function placeNameFromMapsPath(raw: string): string | undefined {
-  const m = raw.match(/\/maps\/(?:place|search)\/([^/@?]+)/i);
-  if (!m?.[1]) return undefined;
-  const token = m[1];
-  if (/^-?\d/.test(token) || /%C2%B0/i.test(token)) return undefined;
-  try {
-    const name = decodeURIComponent(token.replace(/\+/g, " ")).trim();
-    if (!name || /^-?\d+\.?\d*\s*,\s*-?\d+/.test(name)) return undefined;
-    return name.slice(0, 80);
-  } catch {
-    return undefined;
-  }
-}
-
-/** True for Google short links that only resolve after a redirect. */
-export function needsMapsExpand(input: string): boolean {
-  try {
-    const trimmed = input.trim();
-    const u = new URL(/^https?:/i.test(trimmed) ? trimmed : `https://${trimmed}`);
-    const host = u.hostname.replace(/^www\./, "").toLowerCase();
-    return (
-      host === "maps.app.goo.gl" ||
-      host === "goo.gl" ||
-      host === "g.co" ||
-      host.endsWith(".app.goo.gl")
+  it("returns null when the punch is clean", () => {
+    assert.equal(primaryFlag(base), null);
+  });
+  it("keeps original priority: mock beats outside", () => {
+    assert.equal(primaryFlag({ ...base, status: "outside", mock: true }), "mock_location");
+  });
+  it("flags outside radius", () => {
+    assert.equal(primaryFlag({ ...base, status: "outside" }), "outside_radius");
+  });
+  it("an unreliable fix reports low_accuracy even when the verdict is outside", () => {
+    // A network/cell-tower fallback fix (large accuracy radius) shouldn't be
+    // reported as a confident "outside radius" - the distance itself can't
+    // be trusted at that accuracy.
+    assert.equal(
+      primaryFlag({ ...base, status: "outside", accuracy: 2000 }),
+      "low_accuracy",
     );
-  } catch {
-    return false;
-  }
-}
+  });
+  it("a precise fix still reports outside_radius", () => {
+    assert.equal(primaryFlag({ ...base, status: "outside", accuracy: 12 }), "outside_radius");
+  });
+});
 
-/**
- * Pull lat/lng out of a Google Maps / Apple Maps / OSM / geo: / "lat,lng" string.
- * Prefers the place pin (`!3d!4d`) over the camera (`@lat,lng`).
- */
-export function parseGoogleMapsUrl(input: string): MapsPin | null {
-  const raw = input.trim();
-  if (!raw) return null;
+describe("isInsideGeofence", () => {
+  it("passes a precise fix well within radius", () => {
+    assert.equal(isInsideGeofence(50, 200, 12), true);
+  });
+  it("rejects a precise fix clearly outside, even with its small buffer", () => {
+    assert.equal(isInsideGeofence(500, 200, 12), false);
+  });
+  it("credits accuracy as buffer for a borderline noisy-but-reliable fix", () => {
+    // 180m raw distance, 100m radius, but 90m of accuracy uncertainty -
+    // the worker could genuinely be inside; previously this was a hard
+    // reject purely from GPS noise on a mid-range phone.
+    assert.equal(isInsideGeofence(180, 100, 90), true);
+  });
+  it("still rejects when even the full buffer can't cover the distance", () => {
+    assert.equal(isInsideGeofence(500, 100, 90), false);
+  });
+  it("caps the buffer at GEOFENCE_ACCURACY_BUFFER_CAP_M so a huge accuracy value can't swallow any distance", () => {
+    assert.equal(isInsideGeofence(5_000, 100, 4_000), false);
+  });
+});
 
-  const bang = [...raw.matchAll(/!3d(-?\d+\.?\d*)!4d(-?\d+\.?\d*)/g)];
-  if (bang.length) {
-    const last = bang[bang.length - 1];
-    const lat = Number(last[1]);
-    const lng = Number(last[2]);
-    if (validCoord(lat, lng)) return { lat, lng, name: placeNameFromMapsPath(raw) };
-  }
+describe("isImpossibleTravel", () => {
+  it("flags 200km in 30 minutes", () => {
+    assert.equal(isImpossibleTravel(200_000, 0.5), true);
+  });
+  it("allows 8km in 20 minutes", () => {
+    assert.equal(isImpossibleTravel(8_000, 20 / 60), false);
+  });
+});
 
-  const at = raw.match(/@(-?\d+\.?\d*),\s*(-?\d+\.?\d*)/);
-  if (at) {
-    const lat = Number(at[1]);
-    const lng = Number(at[2]);
-    if (validCoord(lat, lng)) return { lat, lng, name: placeNameFromMapsPath(raw) };
-  }
+describe("late cutoff", () => {
+  it("adds calendar days without wrapping oddly", () => {
+    assert.equal(addCairoDays("2026-08-31", 1), "2026-09-01");
+  });
+  it("treats 09:16 Cairo as on time under the 11:00 cutoff", () => {
+    // 09:16 Africa/Cairo = 06:16 UTC in summer (EEST, UTC+3)
+    const at = new Date("2026-08-28T06:16:00Z");
+    assert.equal(isLateCheckin(at), false);
+  });
+  it("treats 11:01 Cairo as late", () => {
+    // 11:01 Africa/Cairo = 08:01 UTC in summer (EEST, UTC+3)
+    const at = new Date("2026-08-28T08:01:00Z");
+    assert.equal(isLateCheckin(at), true);
+  });
+});
 
-  let url: URL | null = null;
-  try {
-    url = new URL(/^https?:/i.test(raw) ? raw : `https://${raw}`);
-  } catch {
-    url = null;
-  }
+describe("isLikelySpoofedGps", () => {
+  it("trusts the phone when it admits mock", () => {
+    assert.equal(isLikelySpoofedGps({ lat: 30.0561, lng: 31.3395, accuracy: 12, mock: true }), true);
+  });
+  it("flags zero accuracy", () => {
+    assert.equal(isLikelySpoofedGps({ lat: 30.0561, lng: 31.3395, accuracy: 0 }), true);
+  });
+  it("does not flag a normal Cairo GPS fix", () => {
+    assert.equal(
+      isLikelySpoofedGps({ lat: 30.056183, lng: 31.339512, accuracy: 14, mock: false }),
+      false,
+    );
+  });
+  it("flags coarse coordinates that claim high accuracy", () => {
+    assert.equal(isLikelySpoofedGps({ lat: 30.06, lng: 31.34, accuracy: 5, mock: false }), true);
+  });
+});
 
-  if (url) {
-    for (const key of ["q", "query", "ll", "center", "destination", "daddr", "sll"]) {
-      const v = url.searchParams.get(key);
-      if (!v) continue;
-      const m = v.match(/(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)/);
-      if (m) {
-        const lat = Number(m[1]);
-        const lng = Number(m[2]);
-        if (validCoord(lat, lng)) return { lat, lng, name: placeNameFromMapsPath(raw) };
-      }
-    }
-    const osm = url.hash.match(/map=\d+\/(-?\d+\.?\d*)\/(-?\d+\.?\d*)/);
-    if (osm) {
-      const lat = Number(osm[1]);
-      const lng = Number(osm[2]);
-      if (validCoord(lat, lng)) return { lat, lng };
-    }
-  }
-
-  const geo = raw.match(/geo:\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)/i);
-  if (geo) {
-    const lat = Number(geo[1]);
-    const lng = Number(geo[2]);
-    if (validCoord(lat, lng)) return { lat, lng };
-  }
-
-  const pair = raw.match(/^(-?\d+\.?\d+)\s*,\s*(-?\d+\.?\d+)$/);
-  if (pair) {
-    const lat = Number(pair[1]);
-    const lng = Number(pair[2]);
-    if (validCoord(lat, lng)) return { lat, lng };
-  }
-
-  return null;
-}
+describe("parseGoogleMapsUrl", () => {
+  it("reads @lat,lng from a place URL and the place name", () => {
+    const pin = parseGoogleMapsUrl(
+      "https://www.google.com/maps/place/HQ+Nasr+City/@30.0561,31.3395,17z",
+    );
+    assert.ok(pin);
+    assert.ok(Math.abs(pin.lat - 30.0561) < 0.0001);
+    assert.ok(Math.abs(pin.lng - 31.3395) < 0.0001);
+    assert.equal(pin.name, "HQ Nasr City");
+  });
+  it("prefers !3d!4d pin over camera @", () => {
+    const pin = parseGoogleMapsUrl(
+      "https://www.google.com/maps/place/Foo/@30.01,31.01,17z/data=!3d30.0561!4d31.3395",
+    );
+    assert.ok(pin);
+    assert.ok(Math.abs(pin.lat - 30.0561) < 0.0001);
+    assert.ok(Math.abs(pin.lng - 31.3395) < 0.0001);
+  });
+  it("reads q=lat,lng", () => {
+    const pin = parseGoogleMapsUrl("https://maps.google.com/?q=29.9285,30.9188");
+    assert.ok(pin);
+    assert.ok(Math.abs(pin.lat - 29.9285) < 0.0001);
+  });
+  it("reads a raw coordinate pair", () => {
+    const pin = parseGoogleMapsUrl("30.0074, 31.4913");
+    assert.ok(pin);
+    assert.equal(pin.lat, 30.0074);
+  });
+  it("returns null for a short link that still needs expanding", () => {
+    assert.equal(parseGoogleMapsUrl("https://maps.app.goo.gl/abc123"), null);
+    assert.equal(needsMapsExpand("https://maps.app.goo.gl/abc123"), true);
+  });
+});
