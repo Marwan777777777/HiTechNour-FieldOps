@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   MapPin,
   Megaphone,
+  MoreHorizontal,
   Palmtree,
   ScrollText,
   Sparkles,
@@ -64,6 +65,7 @@ import {
 import { adminListLeave, reviewLeave } from "@/lib/server/leave";
 import { exportAttendanceExcel } from "@/lib/server/attendance-excel";
 import type { HomeData } from "@/lib/server/field";
+import { Sheet } from "@/components/ui/sheet";
 import { AdminBroadcast } from "./admin-broadcast";
 import { AdminSchedule } from "./admin-schedule";
 import { HoursHeat } from "./hours-heat";
@@ -101,6 +103,11 @@ const NAV: { id: AdminTab; label: Msg; icon: typeof LayoutDashboard }[] = [
   { id: "field", label: "fieldPunch", icon: MapPin },
 ];
 
+// On phones we only have room for a handful of thumb-reachable tabs. These
+// are the ones admins reach for constantly (per the mobile UX pass); the
+// rest live behind "More" so the bar never needs a 13-way <select>.
+const MOBILE_PRIMARY: AdminTab[] = ["overview", "queue", "people", "attendance", "sites"];
+
 function loginName(row: { username?: string | null; email?: string | null }) {
   const u = row.username?.trim();
   if (u) return u;
@@ -137,6 +144,9 @@ export function AdminApp({
   onHome: (next: HomeData) => void;
 }) {
   const [tab, setTab] = useState<AdminTab>("overview");
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreTabs = NAV.filter((item) => !MOBILE_PRIMARY.includes(item.id));
+  const activeInMore = moreTabs.some((item) => item.id === tab);
 
   return (
     <div className="flex min-h-dvh">
@@ -166,20 +176,7 @@ export function AdminApp({
         </nav>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="border-b border-line md:hidden">
-          <select
-            className="h-12 w-full bg-bg px-4 text-sm"
-            value={tab}
-            onChange={(e) => setTab(e.target.value as AdminTab)}
-          >
-            {NAV.map((item) => (
-              <option key={item.id} value={item.id}>
-                {t(locale, item.label)}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="flex-1 overflow-auto p-4 md:p-6">
+        <div className="flex-1 overflow-auto p-4 pb-24 md:p-6 md:pb-6">
           {tab === "overview" ? <Overview locale={locale} /> : null}
           {tab === "queue" ? <Queue locale={locale} /> : null}
           {tab === "people" ? <People locale={locale} home={home} /> : null}
@@ -195,6 +192,70 @@ export function AdminApp({
           {tab === "field" ? <WorkerApp home={home} locale={locale} onHome={onHome} embedded /> : null}
         </div>
       </div>
+
+      {/* Mobile bottom tab bar — replaces the old <select> nav, which sat
+          above the fold and gave no feedback that it was the way to switch
+          screens. This mirrors the worker app's bottom nav pattern. */}
+      <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-bg/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+        <ul className="grid grid-cols-6">
+          {NAV.filter((item) => MOBILE_PRIMARY.includes(item.id)).map((item) => {
+            const Icon = item.icon;
+            const active = tab === item.id;
+            return (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  onClick={() => setTab(item.id)}
+                  className={`flex min-h-14 w-full flex-col items-center justify-center gap-0.5 px-0.5 text-[11px] ${
+                    active ? "text-fg" : "text-faint"
+                  }`}
+                >
+                  <Icon className="size-4" />
+                  {t(locale, item.label)}
+                </button>
+              </li>
+            );
+          })}
+          <li>
+            <button
+              type="button"
+              onClick={() => setMoreOpen(true)}
+              className={`flex min-h-14 w-full flex-col items-center justify-center gap-0.5 px-0.5 text-[11px] ${
+                activeInMore ? "text-fg" : "text-faint"
+              }`}
+            >
+              <MoreHorizontal className="size-4" />
+              {t(locale, "more")}
+            </button>
+          </li>
+        </ul>
+      </nav>
+
+      <Sheet open={moreOpen} onOpenChange={setMoreOpen} title={t(locale, "moreMenuTitle")}>
+        <ul className="grid gap-0.5">
+          {moreTabs.map((item) => {
+            const Icon = item.icon;
+            const active = tab === item.id;
+            return (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTab(item.id);
+                    setMoreOpen(false);
+                  }}
+                  className={`flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-sm ${
+                    active ? "bg-elevated text-fg" : "text-muted"
+                  }`}
+                >
+                  <Icon className="size-4" />
+                  {t(locale, item.label)}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </Sheet>
     </div>
   );
 }
@@ -1082,46 +1143,54 @@ function Sites({ locale }: { locale: Locale }) {
   }, [q.data, locale]);
   if (q.isLoading) return <Skeleton className="h-64" />;
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
-      <div>
-        <div className="flex items-center justify-between">
-          <h1 className="font-display text-2xl font-semibold">{t(locale, "sites")}</h1>
-          <Button variant="outline" onClick={() => setEditing("new")}>
-            {t(locale, "createSite")}
-          </Button>
-        </div>
-        <div className="mt-4 grid gap-5">
-          {sections.map(([groupName, rows]) => (
-            <div key={groupName}>
-              <p className="mb-1.5 px-1 text-xs font-medium uppercase tracking-wide text-faint">
-                {groupName} · {rows.length}
-              </p>
-              <ul className="grid gap-2">
-                {rows.map((s) => (
-                  <li key={s.id}>
-                    <button
-                      type="button"
-                      onClick={() => setEditing(s.id)}
-                      className="flex w-full items-center justify-between rounded-xl border border-line bg-surface px-4 py-3 text-start"
-                    >
-                      <span>
-                        <span className="block text-sm font-medium">{s.name}</span>
-                        <span className="font-mono text-xs text-faint">
-                          {s.lat.toFixed(4)}, {s.lng.toFixed(4)} · {s.radius_meters}m
-                        </span>
-                      </span>
-                      <span className={s.active ? "text-ok" : "text-bad"}>
-                        {s.active ? t(locale, "active") : t(locale, "removed")}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
+    <div>
+      <div className="flex items-center justify-between">
+        <h1 className="font-display text-2xl font-semibold">{t(locale, "sites")}</h1>
+        <Button variant="outline" onClick={() => setEditing("new")}>
+          {t(locale, "createSite")}
+        </Button>
       </div>
-      {editing ? (
+      <div className="mt-4 grid gap-5">
+        {sections.length === 0 ? <Empty>{t(locale, "sites")}</Empty> : null}
+        {sections.map(([groupName, rows]) => (
+          <div key={groupName}>
+            <p className="mb-1.5 px-1 text-xs font-medium uppercase tracking-wide text-faint">
+              {groupName} · {rows.length}
+            </p>
+            <ul className="grid gap-2">
+              {rows.map((s) => (
+                <li key={s.id}>
+                  <button
+                    type="button"
+                    onClick={() => setEditing(s.id)}
+                    className="flex w-full items-center justify-between rounded-xl border border-line bg-surface px-4 py-3 text-start"
+                  >
+                    <span>
+                      <span className="block text-sm font-medium">{s.name}</span>
+                      <span className="font-mono text-xs text-faint">
+                        {s.lat.toFixed(4)}, {s.lng.toFixed(4)} · {s.radius_meters}m
+                      </span>
+                    </span>
+                    <span className={s.active ? "text-ok" : "text-bad"}>
+                      {s.active ? t(locale, "active") : t(locale, "removed")}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+      {/* Create/edit now opens as a sheet instead of a second column that
+          sat below the whole site list — on phones that meant scrolling
+          past every site before the form even appeared. */}
+      <Sheet
+        open={editing !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditing(null);
+        }}
+        title={editing === "new" ? t(locale, "createSite") : t(locale, "editSite")}
+      >
         <SiteForm
           locale={locale}
           groups={groupsQ.data?.rows ?? []}
@@ -1143,9 +1212,7 @@ function Sites({ locale }: { locale: Locale }) {
             void q.refetch();
           }}
         />
-      ) : (
-        <Empty>{t(locale, "sites")}</Empty>
-      )}
+      </Sheet>
     </div>
   );
 }
@@ -1255,8 +1322,7 @@ function SiteForm({
     },
   });
   return (
-    <Panel className="grid gap-3">
-      <h2 className="font-display text-lg font-semibold">{isNew ? t(locale, "createSite") : t(locale, "editSite")}</h2>
+    <div className="grid gap-3">
       <label className="grid gap-1.5">
         <span className="text-xs font-medium text-muted">{t(locale, "mapsLink")}</span>
         <div className="flex gap-2">
@@ -1407,7 +1473,7 @@ function SiteForm({
           )
         ) : null}
       </div>
-    </Panel>
+    </div>
   );
 }
 
