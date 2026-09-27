@@ -88,9 +88,14 @@ describe("late cutoff", () => {
   it("adds calendar days without wrapping oddly", () => {
     assert.equal(addCairoDays("2026-08-31", 1), "2026-09-01");
   });
-  it("treats 09:16 Cairo as late", () => {
+  it("treats 09:16 Cairo as on time under the 11:00 cutoff", () => {
     // 09:16 Africa/Cairo = 06:16 UTC in summer (EEST, UTC+3)
     const at = new Date("2026-08-28T06:16:00Z");
+    assert.equal(isLateCheckin(at), false);
+  });
+  it("treats 11:01 Cairo as late", () => {
+    // 11:01 Africa/Cairo = 08:01 UTC in summer (EEST, UTC+3)
+    const at = new Date("2026-08-28T08:01:00Z");
     assert.equal(isLateCheckin(at), true);
   });
 });
