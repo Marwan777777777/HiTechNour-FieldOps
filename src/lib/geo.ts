@@ -110,8 +110,8 @@ export function cairoDate(at = new Date()): string {
   }).format(at);
 }
 
-export const LATE_CUTOFF_HOUR = 9;
-export const LATE_CUTOFF_MINUTE = 15;
+export const LATE_CUTOFF_HOUR = 11;
+export const LATE_CUTOFF_MINUTE = 0;
 
 export function cairoTimeParts(at = new Date()) {
   const parts = new Intl.DateTimeFormat("en-GB", {
