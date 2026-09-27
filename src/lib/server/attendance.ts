@@ -111,8 +111,13 @@ export async function overviewRoster(sql: Sql) {
       const inn = firstIn[w.user_id];
       const out = lastOut[w.user_id];
       let status: DayStatus = "absent";
-      if (inn && out) status = "completed";
-      else if (inn && isLateCheckin(new Date(inn.created_at))) status = "late";
+      // Lateness is decided once, off the timestamp of the first check-in
+      // (which is permanent — set by the server's clock, not the phone's —
+      // see isLateCheckin). Checking that before "did they check out" means
+      // someone who arrived late stays counted as late for the whole day,
+      // instead of flipping to "completed" the moment they clock out.
+      if (inn && isLateCheckin(new Date(inn.created_at))) status = "late";
+      else if (inn && out) status = "completed";
       else if (inn) status = "present";
       return {
         userId: w.user_id,
