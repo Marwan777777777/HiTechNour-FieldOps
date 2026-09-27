@@ -97,7 +97,9 @@ export const dict = {
     activate: "Activate",
     deleteWorkerPermanently: "Delete permanently",
     confirmDeleteWorker:
-      "Permanently delete this worker? If they have no attendance history this cannot be undone; otherwise they'll be deactivated to preserve that history.",
+      "Permanently delete this worker? If they have no attendance history this cannot be undone; otherwise you'll be asked whether to erase that history too.",
+    confirmForceDeleteWorker:
+      "This worker has attendance/payroll history. Deleting them will also permanently erase that history — it cannot be recovered afterward. Delete anyway?",
     workerDeleted: "Worker permanently deleted",
     workerHasHistoryDeactivated:
       "This worker has attendance history, so they were deactivated instead of deleted.",
@@ -424,7 +426,9 @@ export const dict = {
     activate: "تفعيل",
     deleteWorkerPermanently: "حذف نهائي",
     confirmDeleteWorker:
-      "حذف هذا العامل نهائيًا؟ إذا لم يكن له سجل حضور فلن يمكن التراجع عن هذا؛ وإلا سيتم إيقافه بدلاً من ذلك للحفاظ على سجله.",
+      "حذف هذا العامل نهائيًا؟ إذا لم يكن له سجل حضور فلن يمكن التراجع عن هذا؛ وإلا سيُسألك إن كنت تريد حذف سجله أيضًا.",
+    confirmForceDeleteWorker:
+      "لهذا العامل سجل حضور ورواتب. حذفه سيحذف هذا السجل أيضًا نهائيًا ولن يمكن استرجاعه لاحقًا. هل تريد الحذف رغم ذلك؟",
     workerDeleted: "تم حذف العامل نهائيًا",
     workerHasHistoryDeactivated: "لهذا العامل سجل حضور، لذا تم إيقافه بدلاً من حذفه.",
     distance: "المسافة",
