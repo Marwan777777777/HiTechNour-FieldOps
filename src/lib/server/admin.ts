@@ -436,7 +436,7 @@ export const setWorkerActive = createServerFn({ method: "POST" })
   });
 
 export const deleteWorker = createServerFn({ method: "POST" })
-  .validator((d: { userId: string }) => d)
+  .validator((d: { userId: string; force?: boolean }) => d)
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     await requireAdmin(context.userId);
@@ -447,19 +447,33 @@ export const deleteWorker = createServerFn({ method: "POST" })
     if (!target[0]) throw new Error("Worker not found.");
     const checkinCount = await sql<{ c: number }>`
       select count(*)::int as c from checkins where user_id = ${data.userId}`;
-    if ((checkinCount[0]?.c ?? 0) > 0) {
+    const hasHistory = (checkinCount[0]?.c ?? 0) > 0;
+    if (hasHistory && !data.force) {
       throw new Error(
         "HAS_ATTENDANCE_HISTORY: This worker has attendance records and cannot be permanently " +
           "deleted — deactivate instead to preserve payroll history.",
       );
     }
-    // No attendance history: safe to hard-delete. worker_skills, assignments,
-    // reports, leave_requests, survey_answers, notifications and
-    // push_subscriptions all cascade from profiles/user via their own FKs.
+    // checkins is the one table that does NOT cascade from profiles (by
+    // design, so an unrelated delete elsewhere can never silently wipe
+    // payroll data). A force-delete has to erase it explicitly — this is
+    // the one irreversible step, so it only runs when the admin has
+    // confirmed they want the attendance/payroll history gone too, not
+    // just the worker's access removed.
+    if (hasHistory && data.force) {
+      await sql`delete from checkins where user_id = ${data.userId}`;
+    }
+    // worker_skills, assignments, reports, leave_requests, survey_answers,
+    // notifications and push_subscriptions all cascade from profiles/user
+    // via their own FKs.
     await sql`delete from profiles where user_id = ${data.userId}`;
     await sql`delete from "user" where id = ${data.userId}`;
     await sql`insert into activity_logs (user_id, kind, detail)
-      values (${context.userId}, ${"delete_worker"}, ${`${target[0].full_name} (${data.userId})`})`;
+      values (
+        ${context.userId},
+        ${hasHistory && data.force ? "force_delete_worker" : "delete_worker"},
+        ${`${target[0].full_name} (${data.userId})`}
+      )`;
     return { ok: true };
   });
 
