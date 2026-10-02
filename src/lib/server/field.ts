@@ -170,6 +170,21 @@ export const checkInOut = createServerFn({ method: "POST" })
     try {
       return await processCheckin(context.userId, data);
     } catch (err) {
+      if (err instanceof FieldError && err.code === "MOCK_LOCATION") {
+        // The check-in transaction rolled back, so record the blocked attempt
+        // here, outside it. Shows up in the admin Activity log under the worker.
+        try {
+          const sql = await getSql();
+          await sql`insert into activity_logs (user_id, kind, detail)
+            values (
+              ${context.userId},
+              ${"blocked_mock"},
+              ${`${data.type} site ${data.siteId} acc ${data.accuracy ?? "?"} alt ${data.altitude ?? "null"} @ ${data.lat},${data.lng}`}
+            )`;
+        } catch {
+          // Logging must never mask the block itself.
+        }
+      }
       fail(err);
     }
   });

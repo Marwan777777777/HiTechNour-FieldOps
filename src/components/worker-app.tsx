@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Empty, FlagChip, Kicker, Panel } from "@/components/chrome";
+import { Sheet } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { haversineMeters, isInsideGeofence } from "@/lib/geo";
 import { type Locale, type Msg, t } from "@/lib/i18n";
@@ -39,6 +40,7 @@ function errorCopy(locale: Locale, msg: string) {
   if (msg === "RATE_LIMITED") return t(locale, "slowDown");
   if (msg === "OUTSIDE_RADIUS") return t(locale, "mustBeInside");
   if (msg === "WRONG_SITE") return t(locale, "mustSameSite");
+  if (msg === "MOCK_LOCATION") return t(locale, "mockBlockedTitle");
   if (msg.startsWith("LOCKED_OUT")) return t(locale, "lockedOut");
   return msg;
 }
@@ -169,6 +171,7 @@ function HomeTab({
     altitude: number | null;
     speed: number | null;
   } | null>(null);
+  const [mockBlocked, setMockBlocked] = useState(false);
   const [locErr, setLocErr] = useState<"denied" | "unavailable" | "timeout" | "unsupported" | null>(null);
   // "unknown" while we're still asking the browser; "prompt" means we haven't
   // asked the user yet and must wait for a real tap (see requestLocation
@@ -416,6 +419,7 @@ function HomeTab({
     onError: (err) => {
       const msg = err instanceof Error ? err.message : "Failed";
       if (msg === "OFFLINE") toast.message(t(locale, "offlineQueue"));
+      else if (msg === "MOCK_LOCATION") setMockBlocked(true);
       else toast.error(errorCopy(locale, msg));
     },
   });
@@ -424,6 +428,10 @@ function HomeTab({
 
   return (
     <div className="grid gap-4">
+      <Sheet open={mockBlocked} onOpenChange={setMockBlocked} title={t(locale, "mockBlockedTitle")}>
+        <p className="text-sm text-muted">{t(locale, "mockBlockedBody")}</p>
+        <Button onClick={() => setMockBlocked(false)}>{t(locale, "mockBlockedOk")}</Button>
+      </Sheet>
       {offline > 0 ? (
         <p className="rounded-lg border border-warn/40 bg-surface px-3 py-2 text-sm text-warn">
           {t(locale, "offlineQueue")} · {offline}

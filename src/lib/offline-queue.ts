@@ -58,7 +58,9 @@ export async function flushQueue(send: (item: QueuedPunch) => Promise<unknown>) 
       synced += 1;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
-      if (msg === "ALREADY_CHECKED_IN" || msg === "NOT_CHECKED_IN") continue;
+      // Permanent rejections: retrying will never succeed, so drop the punch
+      // instead of keeping it in the queue forever.
+      if (msg === "ALREADY_CHECKED_IN" || msg === "NOT_CHECKED_IN" || msg === "MOCK_LOCATION") continue;
       kept.push(item);
     }
   }
