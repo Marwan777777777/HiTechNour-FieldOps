@@ -47,6 +47,26 @@ function FieldShell({ email, displayName }: { email?: string; displayName?: stri
       bootstrap({ data: { email, name: displayName, deviceId: await getDeviceId() } }),
   });
 
+  // Removed / deactivated / signed-out accounts: wipe everything stored on this
+  // phone (saved biometric credential, PIN state, device id) and sign out, so the
+  // unlock screen can never offer to open the app again.
+  useEffect(() => {
+    const msg = (boot.error as Error | null)?.message ?? "";
+    if (
+      msg.includes("ACCOUNT_REMOVED") ||
+      msg.includes("ACCOUNT_DEACTIVATED") ||
+      msg.includes("Unauthorized")
+    ) {
+      try {
+        localStorage.clear();
+        sessionStorage.clear();
+      } catch {
+        /* storage unavailable */
+      }
+      void signOut();
+    }
+  }, [boot.error]);
+
   useEffect(() => {
     const stored = localStorage.getItem("htn_locale") as Locale | null;
     if (stored === "ar" || stored === "en") setLocale(stored);
