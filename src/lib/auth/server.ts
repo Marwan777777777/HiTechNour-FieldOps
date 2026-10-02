@@ -208,10 +208,15 @@ export const auth = betterAuth({
   // (incl. the client's `/get-session`) skip the DB — this shrinks the "loading"
   // window and reduces auth flicker. See the `auth` skill for the full
   // flicker-prevention guidance (gate on `isPending`; SSR the session).
-  session: { cookieCache: { enabled: true, maxAge: 300 } },
+  // Cookie cache disabled: with it on, a deleted/deactivated worker's session
+  // stayed valid for up to 5 minutes. Sessions are checked against the DB instead.
+  session: { cookieCache: { enabled: false } },
 
   // Local email/password — toggled only via `./email-password` (not a plugin).
-  ...(emailAndPasswordEnabled ? { emailAndPassword: { enabled: true } } : {}),
+  // Public sign-up is closed: every account is created by an admin from the admin panel.
+  ...(emailAndPasswordEnabled
+    ? { emailAndPassword: { enabled: true, disableSignUp: true } }
+    : {}),
 
   // `__Host-` prefixed cookies: the browser REFUSES any same-named cookie that
   // carries a `Domain` attribute, so a sibling `*.grok.me` app cannot "toss" a
