@@ -1,7 +1,7 @@
 import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import { createServerFn } from "@tanstack/react-start";
-import { authMiddleware } from "@/lib/auth/middleware";
+import { authMiddleware, sessionMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
 import { cairoDate, PAYROLL_CAP_HOURS } from "@/lib/geo";
 import { FieldError, processCheckin } from "./checkin-engine";
@@ -25,52 +25,42 @@ function fail(err: unknown): never {
 
 export const bootstrap = createServerFn({ method: "POST" })
   .validator((d: { email?: string; name?: string; deviceId?: string }) => d)
-  .middleware([authMiddleware])
+  .middleware([sessionMiddleware])
   .handler(async ({ context, data }) => {
     const sql = await getSql();
-    let existing = await profileOf(context.userId);
-    if (existing && !existing.active) {
-      const counts = await sql<{ c: number }>`select count(*)::int as c from profiles`;
-      if ((counts[0]?.c ?? 0) <= 2) {
-        await sql`
-          update profiles
-          set role = 'admin', active = true, device_approved = true, pending_device_id = null
-          where user_id = ${context.userId}`;
-        existing = await profileOf(context.userId);
-      } else if (existing.role === "employee") {
-        const punches = await sql<{ id: number }>`
-          select id from checkins where user_id = ${context.userId} limit 1`;
-        if (!punches[0]) {
-          await sql`
-            update profiles
-            set active = true, device_approved = true, pending_device_id = null
-            where user_id = ${context.userId}`;
-          existing = await profileOf(context.userId);
-        }
+    const existing = await profileOf(context.userId);
+
+    if (!existing) {
+      // Accounts are only ever created by an admin (createWorker), which inserts
+      // the profile up front. So a valid session with NO profile means the
+      // account was removed — never re-create it. The one exception is the very
+      // first account on an empty system, which becomes the admin.
+      const countRows = await sql<{ c: number }>`select count(*)::int as c from profiles`;
+      if ((countRows[0]?.c ?? 0) > 0) {
+        // Remove the orphaned auth user too (cascades its sessions/accounts).
+        await sql`delete from "user" where id = ${context.userId}`;
+        throw new Error("ACCOUNT_REMOVED");
       }
-    }
-    if (existing?.active) {
+      const name = (data.name || data.email || "Admin").slice(0, 80);
+      const username = (data.email ?? name).split("@")[0].slice(0, 40);
+      await sql`insert into profiles (
+          user_id, email, username, full_name, role, device_id, pending_device_id,
+          device_approved, active
+        ) values (
+          ${context.userId}, ${data.email ?? null}, ${username}, ${name}, ${"admin"},
+          ${data.deviceId ?? null}, ${null}, ${true}, ${true}
+        )
+        on conflict (user_id) do nothing`;
+    } else if (!existing.active) {
+      // Deactivated by an admin: stays deactivated. Only an admin can re-activate.
+      throw new Error("ACCOUNT_DEACTIVATED");
+    } else {
       await sql`
         update profiles
         set device_approved = true,
             device_id = coalesce(device_id, ${data.deviceId ?? null}),
             pending_device_id = null
         where user_id = ${context.userId}`;
-      existing = await profileOf(context.userId);
-    }
-    if (!existing) {
-      const countRows = await sql<{ c: number }>`select count(*)::int as c from profiles`;
-      const role = (countRows[0]?.c ?? 0) === 0 ? "admin" : "employee";
-      const name = (data.name || data.email || "Worker").slice(0, 80);
-      const username = (data.email ?? name).split("@")[0].slice(0, 40);
-      await sql`insert into profiles (
-          user_id, email, username, full_name, role, device_id, pending_device_id,
-          device_approved, active
-        ) values (
-          ${context.userId}, ${data.email ?? null}, ${username}, ${name}, ${role},
-          ${data.deviceId ?? null}, ${null}, ${true}, ${true}
-        )
-        on conflict (user_id) do nothing`;
     }
     return loadHome(context.userId);
   });
