@@ -203,6 +203,10 @@ export const dict = {
     moreMenuTitle: "More",
     waitingLocation: "Waiting for location…",
     mustBeInside: "You must be inside the site radius to check in or check out.",
+    mockBlockedTitle: "Fake location detected",
+    mockBlockedBody:
+      "Your phone is reporting a location that doesn't look real, so this punch was not recorded. Turn off any mock-location or fake-GPS app (and Developer options > Select mock location app), then try again. Repeated attempts are reported to your admin.",
+    mockBlockedOk: "OK, I'll fix it",
     mustSameSite: "Check out at the same site you checked in.",
     closest: "closest",
     alreadyIn: "Already checked in",
@@ -530,6 +534,10 @@ export const dict = {
     moreMenuTitle: "المزيد",
     waitingLocation: "بانتظار الموقع…",
     mustBeInside: "يجب أن تكون داخل نطاق الموقع لتسجيل الحضور أو الانصراف.",
+    mockBlockedTitle: "تم اكتشاف موقع وهمي",
+    mockBlockedBody:
+      "هاتفك يرسل موقعًا لا يبدو حقيقيًا، لذلك لم يتم تسجيل هذه العملية. أوقف أي تطبيق موقع وهمي أو GPS مزيف (وكذلك خيار \"تحديد تطبيق الموقع الوهمي\" في خيارات المطور) ثم حاول مرة أخرى. تتم إحالة المحاولات المتكررة إلى المسؤول.",
+    mockBlockedOk: "حسنًا، سأصلحه",
     mustSameSite: "سجّل الانصراف من نفس الموقع الذي سجلت فيه الحضور.",
     closest: "الأقرب",
     alreadyIn: "أنت مسجّل حضورًا بالفعل",

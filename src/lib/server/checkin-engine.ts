@@ -304,6 +304,18 @@ export async function processCheckin(
       speed: payload.speed,
       previous: history.map((h) => ({ lat: h.lat, lng: h.lng, accuracy: h.accuracy_meters })),
     });
+    // Block fake-GPS check-INs outright. Thrown (not returned) so nothing is
+    // inserted; the attempt itself is logged by checkInOut in field.ts, because
+    // this transaction rolls back and would erase any log written here.
+    // Check-outs are never blocked (that would strand an open shift); a
+    // spoofed check-out is still saved and flagged as mock_location by
+    // primaryFlag below, so an admin sees it in the review queue.
+    if (payload.type === "check_in" && (spoofed || payload.mock)) {
+      throw new FieldError(
+        "MOCK_LOCATION",
+        "Mock location detected. Turn off any fake-location app and try again.",
+      );
+    }
     const flag = primaryFlag({
       status,
       accuracy: payload.accuracy,
