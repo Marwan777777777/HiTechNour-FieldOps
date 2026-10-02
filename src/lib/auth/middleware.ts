@@ -25,23 +25,49 @@ import { createMiddleware } from "@tanstack/react-start";
  * all. On the auth-on path, use it on every server function that touches
  * per-user data and scope every query by `context.userId`.
  */
-export const authMiddleware = createMiddleware({ type: "function" })
-  .client(async ({ next }) => {
-    // Live preview (partitioned iframe): the session rides a bearer token, not a
-    // cookie, so forward it to the server. Null when deployed (cookie auth), so
-    // this is a no-op there.
-    const { getBearerToken } = await import("./client");
-    return next({ sendContext: { bearerToken: getBearerToken() ?? undefined } });
-  })
-  .server(async ({ next, context }) => {
-    // ONLY import `*.server` modules here. This file is dual client/server
-    // (bearer hook on the client). A plain `./isolation` path was renamed to
-    // `isolation.server.ts` — keep this import in sync so image `tsc` resolves
-    // it, and so Vite does not ship `@tanstack/react-start/server` to the browser.
-    const { assertSameSiteRequest } = await import("./isolation.server");
-    const { requireUserId } = await import("./verify.server");
-    // Reject scripted cross-site/sibling requests before touching per-user data.
-    assertSameSiteRequest();
-    const userId = await requireUserId(context.bearerToken);
-    return next({ context: { userId } });
-  });
+function buildMiddleware(requireActiveProfile: boolean) {
+  return createMiddleware({ type: "function" })
+    .client(async ({ next }) => {
+      // Live preview (partitioned iframe): the session rides a bearer token, not a
+      // cookie, so forward it to the server. Null when deployed (cookie auth), so
+      // this is a no-op there.
+      const { getBearerToken } = await import("./client");
+      return next({ sendContext: { bearerToken: getBearerToken() ?? undefined } });
+    })
+    .server(async ({ next, context }) => {
+      // ONLY import `*.server` modules here. This file is dual client/server
+      // (bearer hook on the client). A plain `./isolation` path was renamed to
+      // `isolation.server.ts` — keep this import in sync so image `tsc` resolves
+      // it, and so Vite does not ship `@tanstack/react-start/server` to the browser.
+      const { assertSameSiteRequest } = await import("./isolation.server");
+      const { requireUserId, UnauthorizedError } = await import("./verify.server");
+      // Reject scripted cross-site/sibling requests before touching per-user data.
+      assertSameSiteRequest();
+      const userId = await requireUserId(context.bearerToken);
+
+      if (requireActiveProfile) {
+        // A valid session is not enough: the account must still exist and be
+        // active. This is what stops removed / deactivated workers (whose
+        // session cookie may still be cached on their phone) from doing anything.
+        const { getSql } = await import("@/lib/db");
+        const sql = await getSql();
+        const rows = await sql<{ active: boolean }>`
+          select active from profiles where user_id = ${userId}`;
+        if (!rows[0]?.active) throw new UnauthorizedError();
+      }
+
+      return next({ context: { userId } });
+    });
+}
+
+/**
+ * Session-only check (no profile lookup). Use ONLY for `bootstrap` and any
+ * function that must run before a profile exists.
+ */
+export const sessionMiddleware = buildMiddleware(false);
+
+/**
+ * Default for every server function: valid session AND an existing, active
+ * profile. Removed or deactivated accounts get `UnauthorizedError`.
+ */
+export const authMiddleware = buildMiddleware(true);
