@@ -41,7 +41,10 @@ export const adminOverview = createServerFn({ method: "GET" })
         where c.type = 'check_in'
         order by c.created_at desc`,
       loadTodayPunches(sql, today),
-      sql<{ c: number }>`select count(*)::int as c from checkins where flagged = true and reviewed = false`,
+      sql<{ c: number }>`
+        select count(*)::int as c from checkins
+        where flagged = true and reviewed = false
+          and coalesce(flag_reason, '') not in ('off_hours', 'low_accuracy')`,
       sql<{ c: number }>`select count(*)::int as c from profiles
         where role = 'employee' and active = false`,
       sql<{ c: number }>`select count(*)::int as c from reports where status = 'submitted'`,
@@ -97,6 +100,7 @@ export const listFlagged = createServerFn({ method: "GET" })
       join profiles p on p.user_id = c.user_id
       join sites s on s.id = c.site_id
       where c.reviewed = false and c.flagged = true
+        and coalesce(c.flag_reason, '') not in ('off_hours', 'low_accuracy')
       order by c.created_at desc
       limit 80`;
     const pendingPeople = await sql<{
