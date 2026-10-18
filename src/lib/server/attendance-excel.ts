@@ -107,7 +107,7 @@ export async function buildAttendanceWorkbook(sql: Sql, from: string, to: string
 
   const wb = new ExcelJS.Workbook();
   const sheet = wb.addWorksheet("Attendance", {
-    views: [{ rightToLeft: true }],
+    views: [{ rightToLeft: false }],
   });
   // No. | Date | Day | Arrive | Leave | Total Time | Deduction | Rewards / Penalties | Location | Reasons
   const COLS = 10;
@@ -192,7 +192,7 @@ export async function buildAttendanceWorkbook(sql: Sql, from: string, to: string
       const activeLeave = wLeaves.find((l) => l.start_date <= date && l.end_date >= date);
 
       let cell: DayCell;
-      if (isWeekend) {
+      if (isWeekend && !summary) {
         cell = { arrive: "", leave: "", total: "", location: "", status: "weekend" };
       } else if (activeLeave) {
         cell = {
@@ -231,6 +231,8 @@ export async function buildAttendanceWorkbook(sql: Sql, from: string, to: string
         cell.status === "leave" ? (LEAVE_LABEL_AR[cell.leaveKind ?? ""] ?? "") : "";
 
       let fillColor: string | undefined;
+      // Worked on a Friday/Saturday: show the times, keep the weekend colour.
+      if (isWeekend && cell.status === "normal") fillColor = FILL.weekend;
       if (cell.status === "weekend") fillColor = FILL.weekend;
       else if (cell.status === "absence") fillColor = FILL.absence;
       else if (cell.status === "leave")
