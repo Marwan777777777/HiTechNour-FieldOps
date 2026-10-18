@@ -201,10 +201,8 @@ export async function processCheckin(
     // otherwise send any active siteId regardless of what the UI offers.
     // A worker with no assignment for today falls back to any active site,
     // since not every shift is pre-assigned. This only gates check-in: a
-    // check-out must still be allowed to close whatever site the shift was
-    // actually opened at (see the WRONG_SITE check below), even if the
-    // assignment has since changed - otherwise a reassignment mid-shift
-    // would leave an open shift no one can close from the app.
+    // check-out is allowed at any active site, so a reassignment mid-shift
+    // can never leave an open shift that no one can close from the app.
     if (payload.type === "check_in") {
       const todaysAssignments = await tx<{ site_id: number }>`
         select site_id from assignments
@@ -243,9 +241,9 @@ export async function processCheckin(
     if (payload.type === "check_out" && previous?.type !== "check_in") {
       throw new FieldError("NOT_CHECKED_IN", "You are not currently checked in.");
     }
-    if (payload.type === "check_out" && previous.site_id !== payload.siteId) {
-      throw new FieldError("WRONG_SITE", "Check out at the same site you checked in.");
-    }
+    // A worker may check in at the company and check out from ANY active site
+    // (or the other way round), so there is deliberately no "same site"
+    // check here. The site passed with a check-out is where they left from.
 
     const recent = await tx<{ c: number }>`
       select count(*)::int as c from checkins
