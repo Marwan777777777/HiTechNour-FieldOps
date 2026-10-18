@@ -38,7 +38,6 @@ function errorCopy(locale: Locale, msg: string) {
   if (msg === "NOT_CHECKED_IN") return t(locale, "notIn");
   if (msg === "RATE_LIMITED") return t(locale, "slowDown");
   if (msg === "OUTSIDE_RADIUS") return t(locale, "mustBeInside");
-  if (msg === "WRONG_SITE") return t(locale, "mustSameSite");
   if (msg.startsWith("LOCKED_OUT")) return t(locale, "lockedOut");
   return msg;
 }
@@ -319,14 +318,10 @@ function HomeTab({
     });
 
   useEffect(() => {
-    if (home.isCheckedIn && home.openSiteId) {
-      setSiteId(home.openSiteId);
-      return;
-    }
     if (!pos || pickedSite.current || sitesByDistance.length === 0) return;
     const closest = sitesByDistance[0];
     if (closest && closest.id !== siteId) setSiteId(closest.id);
-  }, [pos, sitesByDistance, siteId, home.isCheckedIn, home.openSiteId]);
+  }, [pos, sitesByDistance, siteId]);
 
   const site = sitesByDistance.find((s) => s.id === siteId) ?? sitesByDistance[0];
   const dist = pos && site ? haversineMeters(pos.lat, pos.lng, site.lat, site.lng) : null;
@@ -342,9 +337,6 @@ function HomeTab({
   const punch = useMutation({
     mutationFn: async () => {
       if (!site || !pos) throw new Error(t(locale, "waitingLocation"));
-      if (home.isCheckedIn && home.openSiteId && site.id !== home.openSiteId) {
-        throw new Error(t(locale, "mustSameSite"));
-      }
       const here = isInsideGeofence(
         haversineMeters(pos.lat, pos.lng, site.lat, site.lng),
         site.radius_meters,
@@ -391,6 +383,9 @@ function HomeTab({
       }
     },
     onSuccess: (result) => {
+      // Let the closest site be auto-picked again for the next punch, since
+      // the worker may now be somewhere else (check-out can be at any site).
+      pickedSite.current = false;
       const event: TimelineEvent = {
         id: result.id,
         type: result.type as TimelineEvent["type"],
@@ -517,12 +512,11 @@ function HomeTab({
                       <button
                         key={s.id}
                         type="button"
-                        disabled={home.isCheckedIn}
                         onClick={() => {
                           pickedSite.current = true;
                           setSiteId(s.id);
                         }}
-                        className={`flex w-full items-center justify-between border-t border-line/60 px-3 py-2.5 text-start text-sm first:border-t-0 disabled:opacity-70 ${
+                        className={`flex w-full items-center justify-between border-t border-line/60 px-3 py-2.5 text-start text-sm first:border-t-0 ${
                           selected ? "bg-line/40 font-semibold" : ""
                         }`}
                       >
