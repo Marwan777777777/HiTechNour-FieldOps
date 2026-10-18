@@ -108,9 +108,11 @@ async function loadHome(userId: string) {
   // and deadlock their checkout against the "must be same site" check.
   const openSiteId = lastCheck[0]?.type === "check_in" ? lastCheck[0].site_id : null;
   const assignedSiteIds = new Set(todayAssign.map((a) => a.site_id));
+  // While a shift is open the worker may check out from ANY active site, so
+  // the assignment filter only applies when they are about to check in.
   const sites =
-    assignedSiteIds.size > 0
-      ? allSites.filter((s) => assignedSiteIds.has(s.id) || s.id === openSiteId)
+    assignedSiteIds.size > 0 && openSiteId == null
+      ? allSites.filter((s) => assignedSiteIds.has(s.id))
       : allSites;
 
   let todayHours = 0;
