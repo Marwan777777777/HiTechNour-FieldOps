@@ -31,6 +31,34 @@ const LEAVE_LABEL_AR: Record<string, string> = {
   rest: "راحة",
 };
 
+// Export order: engineers first, then training engineers, then technicians.
+// Grouping is driven by profiles.title ("Installation Engineer",
+// "Training Engineer", "Installation Technician"). Anyone with a missing or
+// unrecognised title goes in a last "Other" group so nobody drops out.
+type WorkerGroup = "engineer" | "training" | "technician" | "other";
+const GROUP_ORDER: WorkerGroup[] = ["engineer", "training", "technician", "other"];
+const GROUP_BAND: Record<WorkerGroup, string> = {
+  engineer: "Engineers",
+  training: "Training Engineers",
+  technician: "Technicians",
+  other: "Other (no title set)",
+};
+// Only engineers and training engineers get the "Eng." prefix.
+const GROUP_PREFIX: Record<WorkerGroup, string> = {
+  engineer: "Eng. ",
+  training: "Eng. ",
+  technician: "",
+  other: "",
+};
+
+function workerGroup(title: string | null): WorkerGroup {
+  const t = (title ?? "").toLowerCase();
+  if (t.includes("technician")) return "technician";
+  if (t.includes("training")) return "training";
+  if (t.includes("engineer")) return "engineer";
+  return "other";
+}
+
 function eachDate(from: string, to: string): string[] {
   const out: string[] = [];
   let cursor = from;
@@ -46,8 +74,8 @@ function eachDate(from: string, to: string): string[] {
 /** Builds the attendance workbook for `from`..`to` (inclusive, YYYY-MM-DD). */
 export async function buildAttendanceWorkbook(sql: Sql, from: string, to: string) {
   const data = { from, to };
-  const workers = await sql<{ user_id: string; full_name: string }>`
-      select user_id, full_name from profiles
+  const workers = await sql<{ user_id: string; full_name: string; title: string | null }>`
+      select user_id, full_name, title from profiles
       where role = 'employee'
       order by full_name`;
 
@@ -103,7 +131,11 @@ export async function buildAttendanceWorkbook(sql: Sql, from: string, to: string
   }
 
   const dates = eachDate(data.from, data.to);
-  const activeWorkers = workers.filter((w) => !resignedIds.has(w.user_id));
+  // Stable sort: group first, then the existing alphabetical order inside each group.
+  const activeWorkers = workers
+    .filter((w) => !resignedIds.has(w.user_id))
+    .map((w) => ({ ...w, group: workerGroup(w.title) }))
+    .sort((a, b) => GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group));
 
   const wb = new ExcelJS.Workbook();
   const sheet = wb.addWorksheet("Attendance", {
@@ -126,8 +158,21 @@ export async function buildAttendanceWorkbook(sql: Sql, from: string, to: string
 
   let rowCursor = 1;
   let blockNo = 1;
+  let currentGroup: WorkerGroup | null = null;
 
   for (const worker of activeWorkers) {
+    // Labelled separator band whenever the group changes (not before the first group).
+    if (currentGroup !== null && worker.group !== currentGroup) {
+      sheet.mergeCells(rowCursor, 1, rowCursor, COLS);
+      const band = sheet.getCell(rowCursor, 1);
+      band.value = GROUP_BAND[worker.group];
+      band.font = { bold: true, size: 12, color: { argb: "FFFFFFFF" } };
+      band.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF7F7F7F" } };
+      band.alignment = { horizontal: "center", vertical: "middle" };
+      sheet.getRow(rowCursor).height = 20;
+      rowCursor += 2; // band + one blank row before the next block
+    }
+    currentGroup = worker.group;
     const wPunches = punchesByWorker.get(worker.user_id) ?? [];
     const wLeaves = leavesByWorker.get(worker.user_id) ?? [];
 
@@ -135,7 +180,7 @@ export async function buildAttendanceWorkbook(sql: Sql, from: string, to: string
     const titleRow = sheet.getRow(rowCursor);
     sheet.mergeCells(rowCursor, 2, rowCursor, 8);
     titleRow.getCell(1).value = blockNo;
-    titleRow.getCell(2).value = `Eng. ${worker.full_name}`;
+    titleRow.getCell(2).value = `${GROUP_PREFIX[worker.group]}${worker.full_name}`;
     titleRow.getCell(9).value = "Salary";
     titleRow.eachCell((c) => {
       c.font = { bold: true };
