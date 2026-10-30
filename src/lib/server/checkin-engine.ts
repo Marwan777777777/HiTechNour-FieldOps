@@ -11,9 +11,9 @@ import {
   isOffHours,
   primaryFlag,
 } from "@/lib/geo";
-import { withTransaction } from "@/lib/db";
+import { withTransaction, type Sql } from "@/lib/db";
 import { approvedLeaveToday } from "./leave";
-import { publicKeyFingerprint, punchMessage, verifyDeviceSignature } from "./device";
+import { proofOk, publicKeyFingerprint, punchMessage, verifyDeviceSignature } from "./device";
 import type { Profile, Site } from "./types";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -75,22 +75,7 @@ function validate(payload: CheckinPayload) {
   }
 }
 
-function proofOk(payload: CheckinPayload): boolean {
-  if (!payload.devicePublicKey || !payload.deviceSignature) return false;
-  if (publicKeyFingerprint(payload.devicePublicKey) !== payload.deviceId) return false;
-  return verifyDeviceSignature(
-    payload.devicePublicKey,
-    punchMessage({
-      deviceId: payload.deviceId,
-      clientEventId: payload.clientEventId,
-      type: payload.type,
-      lat: payload.lat,
-      lng: payload.lng,
-      siteId: payload.siteId,
-    }),
-    payload.deviceSignature,
-  );
-}
+export { proofOk };
 
 type Tx = Parameters<Parameters<typeof withTransaction>[0]>[0];
 
@@ -127,6 +112,109 @@ async function autoCloseStale(tx: Tx, userId: string) {
   return { ...last, type: "check_out" as const };
 }
 
+export async function validateDeviceBinding(
+  sql: Sql,
+  userId: string,
+  payload: CheckinPayload,
+  me: Profile,
+): Promise<void> {
+  const signed = proofOk(payload);
+  const signedPub = signed ? payload.devicePublicKey! : null;
+  const wa = payload.webauthnId ?? null;
+
+  if (!signed) {
+    throw new FieldError("INVALID_DEVICE_SIGNATURE", "Valid device signature is required.");
+  }
+
+  // 1. Worker has no device bound yet
+  if (!me.device_id) {
+    if (me.device_approved) {
+      // First-time binding on pre-approved profile (e.g. newly created worker)
+      await sql`update profiles
+        set device_id = ${payload.deviceId},
+            device_public_key = ${signedPub},
+            device_webauthn_id = coalesce(${wa}, device_webauthn_id),
+            pending_device_id = null,
+            pending_device_public_key = null,
+            pending_device_webauthn_id = null,
+            device_bound_at = coalesce(device_bound_at, now())
+        where user_id = ${userId}`;
+      return;
+    }
+    // Profile is not pre-approved: record pending device and require admin approval
+    if (me.pending_device_id && me.pending_device_id !== payload.deviceId) {
+      throw new FieldError(
+        "DEVICE_PENDING_CONFLICT",
+        "Another device is already awaiting approval. Contact your administrator to approve or reset the device request.",
+      );
+    }
+    const updated = await sql<{ user_id: string }>`update profiles
+      set pending_device_id = ${payload.deviceId},
+          pending_device_public_key = ${signedPub},
+          pending_device_webauthn_id = coalesce(${wa}, pending_device_webauthn_id)
+      where user_id = ${userId}
+        and (pending_device_id is null or pending_device_id = ${payload.deviceId})
+      returning user_id`;
+    if (!updated[0]) {
+      throw new FieldError(
+        "DEVICE_PENDING_CONFLICT",
+        "Another device is already awaiting approval. Contact your administrator to approve or reset the device request.",
+      );
+    }
+    throw new FieldError(
+      "DEVICE_PENDING",
+      "This phone is waiting for admin approval. You cannot check in yet.",
+    );
+  }
+
+  // 2. Punch is from the registered device
+  if (me.device_id === payload.deviceId) {
+    if (!me.device_approved) {
+      throw new FieldError(
+        "DEVICE_PENDING",
+        "This phone is waiting for admin approval. You cannot check in yet.",
+      );
+    }
+    if (me.device_public_key && me.device_public_key !== signedPub) {
+      throw new FieldError("INVALID_DEVICE_SIGNATURE", "Device key does not match approved device.");
+    }
+    if (!me.device_public_key && signedPub) {
+      // Backfill public key for existing approved device
+      await sql`update profiles
+        set device_public_key = ${signedPub},
+            device_webauthn_id = coalesce(${wa}, device_webauthn_id)
+        where user_id = ${userId}`;
+    }
+    return;
+  }
+
+  // 3. Changed or unregistered device attempting to check in on an account with an approved device
+  // Must NOT replace the active device or auto-approve! Record as pending and block check-in.
+  if (me.pending_device_id && me.pending_device_id !== payload.deviceId) {
+    throw new FieldError(
+      "DEVICE_PENDING_CONFLICT",
+      "Another device is already awaiting approval. Contact your administrator to approve or reset the device request.",
+    );
+  }
+  const updated = await sql<{ user_id: string }>`update profiles
+    set pending_device_id = ${payload.deviceId},
+        pending_device_public_key = ${signedPub},
+        pending_device_webauthn_id = coalesce(${wa}, pending_device_webauthn_id)
+    where user_id = ${userId}
+      and (pending_device_id is null or pending_device_id = ${payload.deviceId})
+    returning user_id`;
+  if (!updated[0]) {
+    throw new FieldError(
+      "DEVICE_PENDING_CONFLICT",
+      "Another device is already awaiting approval. Contact your administrator to approve or reset the device request.",
+    );
+  }
+  throw new FieldError(
+    "DEVICE_PENDING",
+    "This phone is waiting for admin approval. You cannot check in yet.",
+  );
+}
+
 export async function processCheckin(
   userId: string,
   payload: CheckinPayload,
@@ -140,31 +228,7 @@ export async function processCheckin(
   if (!me) throw new FieldError("NO_PROFILE", "No profile");
   if (!me.active) throw new FieldError("ACCOUNT_PENDING", "Account is not active.");
 
-  const signed = proofOk(payload);
-  const signedPub = signed ? payload.devicePublicKey! : null;
-  const wa = payload.webauthnId ?? null;
-
-  if (!signed) {
-    if (me.device_id && me.device_id !== payload.deviceId) {
-      throw new FieldError("DEVICE_PENDING", "Sign in on this phone first so it can be bound.");
-    }
-  } else if (
-    !me.device_id ||
-    me.device_id !== payload.deviceId ||
-    (me.device_public_key && me.device_public_key !== signedPub) ||
-    (!me.device_public_key && signedPub)
-  ) {
-    await sql`update profiles
-      set device_id = ${payload.deviceId},
-          device_public_key = coalesce(${signedPub}, device_public_key),
-          device_webauthn_id = coalesce(${wa}, device_webauthn_id),
-          pending_device_id = null,
-          pending_device_public_key = null,
-          pending_device_webauthn_id = null,
-          device_approved = true,
-          device_bound_at = coalesce(device_bound_at, now())
-      where user_id = ${userId}`;
-  }
+  await validateDeviceBinding(sql, userId, payload, me);
 
   return withTransaction(async (tx) => {
     const locked = await tx<Profile>`

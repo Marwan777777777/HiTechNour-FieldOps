@@ -113,7 +113,7 @@ export const listFlagged = createServerFn({ method: "GET" })
     }>`
       select user_id, full_name, email, pending_device_id, active, device_approved
       from profiles
-      where role = 'employee' and active = false
+      where role = 'employee' and (active = false or pending_device_id is not null or device_approved = false)
       order by created_at desc`;
     return { flagged, pendingPeople };
   });
@@ -352,36 +352,63 @@ export const workerAttendanceCsv = createServerFn({ method: "GET" })
     };
   });
 
+export async function executeApproveDevice(
+  sql: Awaited<ReturnType<typeof getSql>>,
+  userId: string,
+  expectedDeviceId: string,
+  adminUserId: string,
+): Promise<{ ok: true; userId: string }> {
+  // Atomically promote pending device ONLY IF pending_device_id exactly matches expectedDeviceId
+  const rows = await sql<{ user_id: string }>`
+    update profiles
+    set device_id = pending_device_id,
+        device_public_key = coalesce(pending_device_public_key, device_public_key),
+        device_webauthn_id = coalesce(pending_device_webauthn_id, device_webauthn_id),
+        pending_device_id = null,
+        pending_device_public_key = null,
+        pending_device_webauthn_id = null,
+        device_approved = true,
+        device_bound_at = now()
+    where user_id = ${userId}
+      and pending_device_id = ${expectedDeviceId}
+      and pending_device_id is not null
+    returning user_id`;
+
+  if (!rows[0]) {
+    const existing = await sql<Profile>`
+      select user_id, pending_device_id, device_id, device_approved
+      from profiles where user_id = ${userId}`;
+    if (!existing[0]) {
+      throw new Error("NOT_FOUND");
+    }
+    if (!existing[0].pending_device_id) {
+      throw new Error("NO_PENDING_DEVICE");
+    }
+    if (existing[0].pending_device_id !== expectedDeviceId) {
+      throw new Error("DEVICE_REQUEST_CHANGED");
+    }
+    throw new Error("DEVICE_REQUEST_CHANGED");
+  }
+
+  await notifyAndPush(
+    sql,
+    [userId],
+    "Device approved",
+    "You can now check in from this phone.",
+    "device",
+  );
+  await sql`insert into activity_logs (user_id, kind, detail)
+    values (${adminUserId}, ${"approve_device"}, ${userId})`;
+  return { ok: true, userId };
+}
+
 export const approveDevice = createServerFn({ method: "POST" })
-  .validator((d: { userId: string }) => d)
+  .validator((d: { userId: string; expectedDeviceId: string }) => d)
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     await requireAdmin(context.userId);
     const sql = await getSql();
-    const rows = await sql<{ user_id: string }>`
-      update profiles
-      set device_id = coalesce(pending_device_id, device_id),
-          device_public_key = coalesce(pending_device_public_key, device_public_key),
-          device_webauthn_id = coalesce(pending_device_webauthn_id, device_webauthn_id),
-          pending_device_id = null,
-          pending_device_public_key = null,
-          pending_device_webauthn_id = null,
-          device_approved = true,
-          active = true,
-          device_bound_at = now()
-      where user_id = ${data.userId}
-      returning user_id`;
-    if (!rows[0]) throw new Error("NOT_FOUND");
-    await notifyAndPush(
-      sql,
-      [data.userId],
-      "Device approved",
-      "You can now check in from this phone.",
-      "device",
-    );
-    await sql`insert into activity_logs (user_id, kind, detail)
-      values (${context.userId}, ${"approve_device"}, ${data.userId})`;
-    return { ok: true };
+    return executeApproveDevice(sql, data.userId, data.expectedDeviceId, context.userId);
   });
 
 export const resetDevice = createServerFn({ method: "POST" })

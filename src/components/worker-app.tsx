@@ -16,6 +16,7 @@ import {
   loadReports,
   loadTeamPunches,
   markNotificationsRead,
+  refreshHome,
   submitReport,
   updateProfile,
   type HomeData,
@@ -28,11 +29,17 @@ import { OpsMap } from "./ops-map";
 import { clientEventId } from "@/lib/utils";
 import { getDeviceId, punchMessage, signDeviceProof } from "@/lib/device-bind";
 import { PushNudge } from "./alerts-bell";
+import { LocationStatusCard, evaluateGpsAdvisory } from "./worker/location-status-card";
+import { PrimaryPunchControl } from "./worker/primary-punch-control";
+import { ShiftSummaryCard } from "./worker/shift-summary-card";
+import { DeviceStatusBanner, NetworkTimeoutAlert } from "./worker/device-status-banner";
 
 type Tab = "home" | "history" | "jobs" | "reports" | "me";
 
 function errorCopy(locale: Locale, msg: string) {
   if (msg === "DEVICE_PENDING") return t(locale, "pendingDevice");
+  if (msg === "DEVICE_PENDING_CONFLICT") return t(locale, "devicePendingConflict");
+  if (msg === "INVALID_DEVICE_SIGNATURE") return t(locale, "invalidDeviceSignature");
   if (msg === "ACCOUNT_PENDING") return t(locale, "accountPending");
   if (msg === "ALREADY_CHECKED_IN") return t(locale, "alreadyIn");
   if (msg === "NOT_CHECKED_IN") return t(locale, "notIn");
@@ -328,10 +335,43 @@ function HomeTab({
     if (closest && closest.id !== siteId) setSiteId(closest.id);
   }, [pos, sitesByDistance, siteId, home.isCheckedIn, home.openSiteId]);
 
+  const [unconfirmedNetwork, setUnconfirmedNetwork] = useState(false);
+  const [isCheckingStatus, setIsCheckingStatus] = useState(false);
+  const attemptedTypeRef = useRef<"check_in" | "check_out" | null>(null);
+
+  const handleCheckStatus = async () => {
+    setIsCheckingStatus(true);
+    try {
+      const updated = await refreshHome();
+      const wasCheckingIn = attemptedTypeRef.current === "check_in";
+      const wasCheckingOut = attemptedTypeRef.current === "check_out";
+      if ((wasCheckingIn && updated.isCheckedIn) || (wasCheckingOut && !updated.isCheckedIn)) {
+        setUnconfirmedNetwork(false);
+        attemptedTypeRef.current = null;
+        onHome(updated);
+        qc.setQueryData(["htn-home"], updated);
+        toast.success(t(locale, "confirmed"));
+      } else {
+        toast.error(t(locale, "networkOutcomeAmbiguous"));
+      }
+    } catch {
+      toast.error(t(locale, "loadError"));
+    } finally {
+      setIsCheckingStatus(false);
+    }
+  };
+
   const site = sitesByDistance.find((s) => s.id === siteId) ?? sitesByDistance[0];
   const dist = pos && site ? haversineMeters(pos.lat, pos.lng, site.lat, site.lng) : null;
   const inside =
     dist != null && site ? isInsideGeofence(dist, site.radius_meters, pos?.accuracy) : false;
+
+  // Evaluate advisory GPS state using Phase 1B.0.6 rules
+  const gpsAdvisory = evaluateGpsAdvisory(
+    dist,
+    site?.radius_meters ?? 50,
+    pos?.accuracy
+  );
 
   const teamLog = useQuery({
     queryKey: ["htn-team-punches"],
@@ -353,6 +393,7 @@ function HomeTab({
       if (!here) throw new Error(t(locale, "mustBeInside"));
       const eventId = clientEventId();
       const deviceId = await getDeviceId();
+      attemptedTypeRef.current = home.isCheckedIn ? "check_out" : "check_in";
       const proof = await signDeviceProof(
         punchMessage({
           deviceId,
@@ -379,6 +420,7 @@ function HomeTab({
         clientEventId: eventId,
       };
       try {
+        setUnconfirmedNetwork(false);
         return await checkInOut({ data: payload });
       } catch (err) {
         if (typeof navigator !== "undefined" && !navigator.onLine) {
@@ -387,10 +429,17 @@ function HomeTab({
           setOffline(queuedCount());
           throw new Error("OFFLINE");
         }
+        // If error message indicates connection drop or timeout, flag unconfirmed state
+        const errStr = err instanceof Error ? err.message : String(err);
+        if (errStr.includes("fetch") || errStr.includes("network") || errStr.includes("Failed to fetch") || errStr.includes("timeout")) {
+          setUnconfirmedNetwork(true);
+        }
         throw err;
       }
     },
     onSuccess: (result) => {
+      setUnconfirmedNetwork(false);
+      attemptedTypeRef.current = null;
       const event: TimelineEvent = {
         id: result.id,
         type: result.type as TimelineEvent["type"],
@@ -421,89 +470,115 @@ function HomeTab({
   });
 
   const assignment = home.todayAssign[0];
+  const deviceApproved = home.me.device_approved;
+
+  // Active advisory state including permission checks
+  const effectiveGpsState =
+    locErr === "denied"
+      ? "permission_denied"
+      : !pos || locErr === "timeout" || locErr === "unavailable"
+      ? "locating"
+      : gpsAdvisory.state;
 
   return (
-    <div className="grid gap-4">
+    <div className="grid gap-3.5 pb-2">
+      {/* Device approval warning banner */}
+      {!deviceApproved ? (
+        <DeviceStatusBanner locale={locale} deviceId={home.me.device_id ?? home.me.pending_device_id} />
+      ) : null}
+
+      {/* Network timeout / unconfirmed alert */}
+      {unconfirmedNetwork ? (
+        <NetworkTimeoutAlert
+          locale={locale}
+          isChecking={isCheckingStatus}
+          onCheckStatus={handleCheckStatus}
+        />
+      ) : null}
+
+      {/* Offline Queue Badge */}
       {offline > 0 ? (
-        <p className="rounded-lg border border-warn/40 bg-surface px-3 py-2 text-sm text-warn">
+        <p className="rounded-lg border border-warn/40 bg-surface px-3 py-2 text-xs text-warn">
           {t(locale, "offlineQueue")} · {offline}
         </p>
       ) : null}
 
       <PushNudge locale={locale} />
 
-      <Panel className="p-5">
-        {permState === "prompt" && !pos ? (
-          <div className="grid place-items-center gap-3 py-4 text-center">
-            <MapPin className="h-8 w-8 text-accent" />
-            <p className="font-display text-lg font-semibold">{t(locale, "locEnableBtn")}</p>
-            <p className="max-w-xs text-sm text-muted">{t(locale, "locEnableHint")}</p>
-            <Button onClick={requestLocation}>{t(locale, "locEnableBtn")}</Button>
+      {/* Assigned Site & Shift Details Card */}
+      <Panel className="p-4">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+              {t(locale, "assignedWorkplace")}
+            </span>
+            <h2 className="mt-0.5 truncate text-base font-bold text-fg">
+              {site?.name ?? t(locale, "noAssignment")}
+            </h2>
           </div>
-        ) : locErr === "denied" ? (
-          <div className="grid gap-3 py-2 text-center">
-            <MapPinOff className="mx-auto h-8 w-8 text-warn" />
-            <p className="font-display text-lg font-semibold">{t(locale, "locPermDeniedTitle")}</p>
-            <p className="text-sm text-muted">{t(locale, "locPermDeniedBody")}</p>
-            <ol className="grid gap-2 rounded-lg border border-line bg-elevated p-3 text-start text-sm text-muted">
-              <li>{t(locale, "locPermStepAndroid")}</li>
-              <li>{t(locale, "locPermStepIos")}</li>
-              <li>{t(locale, "locPermStepGeneral")}</li>
-            </ol>
-            <Button onClick={requestLocation}>{t(locale, "locRetryCheck")}</Button>
+          {site ? (
+            <span className="shrink-0 rounded-full border border-line bg-elevated px-2 py-0.5 font-mono text-[11px] text-muted">
+              {t(locale, "siteRadiusLabel")}: {site.radius_meters}m
+            </span>
+          ) : null}
+        </div>
+
+        {assignment ? (
+          <div className="mt-2 text-xs text-muted">
+            <span className="font-medium text-fg">{t(locale, "assignmentToday")}:</span>{" "}
+            {assignment.task ?? assignment.site_name}
           </div>
-        ) : (
-          <>
-            <div className="text-center">
-              <p className="font-display text-lg font-semibold">
-                {locErr === "unavailable"
-                  ? t(locale, "locUnavailable")
-                  : locErr === "unsupported"
-                    ? t(locale, "locDenied")
-                    : inside
-                      ? t(locale, "inside")
-                      : pos
-                        ? t(locale, "outside")
-                        : locErr === "timeout"
-                          ? t(locale, "locTimedOut")
-                          : t(locale, "locating")}
-              </p>
-              <p className="mt-1 font-mono text-sm text-muted">
-                {dist != null ? `${Math.round(dist)} m` : "—"}
-                {pos ? ` · ±${Math.round(pos.accuracy)} m` : ""}
-              </p>
-            </div>
-            {site && pos ? (
-              <OpsMap
-                className="mt-4 h-52"
-                sites={[site]}
-                worker={{ lat: pos.lat, lng: pos.lng }}
-              />
-            ) : (
-              <div className="mt-4 grid h-52 place-items-center rounded-xl border border-line bg-elevated text-sm text-muted">
-                {t(locale, "locating")}
-              </div>
-            )}
-          </>
-        )}
+        ) : null}
       </Panel>
 
-      <div className="grid gap-2">
-        <span className="text-xs font-medium text-muted">{t(locale, "site")}</span>
+      {/* Location Advisory & Accuracy Status Card */}
+      {permState === "prompt" && !pos ? (
+        <Panel className="grid place-items-center gap-3 p-5 text-center">
+          <MapPin className="h-8 w-8 text-primary" />
+          <p className="font-display text-base font-semibold">{t(locale, "locEnableBtn")}</p>
+          <p className="max-w-xs text-xs text-muted">{t(locale, "locEnableHint")}</p>
+          <Button onClick={requestLocation} className="h-10 text-xs">
+            {t(locale, "locEnableBtn")}
+          </Button>
+        </Panel>
+      ) : locErr === "denied" ? (
+        <Panel className="grid gap-3 p-4 text-center">
+          <MapPinOff className="mx-auto h-7 w-7 text-rose-500" />
+          <p className="font-display text-base font-semibold">{t(locale, "locPermDeniedTitle")}</p>
+          <p className="text-xs text-muted leading-relaxed">{t(locale, "locPermDeniedBody")}</p>
+          <Button onClick={requestLocation} className="mt-1 h-9 text-xs">
+            {t(locale, "locRetryCheck")}
+          </Button>
+        </Panel>
+      ) : (
+        <LocationStatusCard
+          locale={locale}
+          state={effectiveGpsState}
+          accuracy={pos?.accuracy ?? null}
+          distanceToBoundary={gpsAdvisory.distanceToBoundary}
+          distanceFromCenter={dist != null ? Math.round(dist) : null}
+        />
+      )}
+
+      {/* Site Selector Dropdown (Collapsible) */}
+      <div className="grid gap-1.5">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+          {t(locale, "site")}
+        </span>
         {groupedSites.map(([groupName, groupSites]) => {
           const isOpen = openGroups.has(groupName);
           return (
-            <div key={groupName} className="overflow-hidden rounded-lg border border-line bg-elevated">
+            <div key={groupName} className="overflow-hidden rounded-xl border border-line bg-elevated">
               <button
                 type="button"
                 onClick={() => toggleGroup(groupName)}
-                className="flex w-full items-center justify-between px-3 py-2.5 text-sm font-medium"
+                className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium"
                 aria-expanded={isOpen}
               >
                 <span>
                   {groupName} · {groupSites.length}
                 </span>
-                <span className="text-xs text-muted">
+                <span className="text-[11px] text-muted">
                   {isOpen ? t(locale, "collapseGroup") : t(locale, "expandGroup")}
                 </span>
               </button>
@@ -522,13 +597,13 @@ function HomeTab({
                           pickedSite.current = true;
                           setSiteId(s.id);
                         }}
-                        className={`flex w-full items-center justify-between border-t border-line/60 px-3 py-2.5 text-start text-sm first:border-t-0 disabled:opacity-70 ${
-                          selected ? "bg-line/40 font-semibold" : ""
+                        className={`flex w-full items-center justify-between border-t border-line/60 px-3 py-2 text-start text-xs first:border-t-0 disabled:opacity-70 ${
+                          selected ? "bg-line/40 font-semibold text-fg" : "text-muted"
                         }`}
                       >
-                        <span>{s.name}</span>
-                        <span className="font-mono text-xs text-muted">
-                          {meters != null ? `${meters} m` : "—"}
+                        <span className="truncate max-w-[200px]">{s.name}</span>
+                        <span className="font-mono text-[11px]">
+                          {meters != null ? `${meters}m` : "—"}
                           {isGlobalClosest ? ` · ${t(locale, "closest")}` : ""}
                         </span>
                       </button>
@@ -541,62 +616,34 @@ function HomeTab({
         })}
       </div>
 
-      <Button
-        className="h-14 w-full rounded-xl text-base"
-        disabled={punch.isPending || !pos || !inside}
-        onClick={() => punch.mutate()}
-      >
-        {punch.isPending ? "…" : home.isCheckedIn ? t(locale, "checkOut") : t(locale, "checkIn")}
-      </Button>
-      {pos && !inside ? (
-        <p className="text-center text-sm text-warn">{t(locale, "mustBeInside")}</p>
+      {/* Primary Punch Control Button */}
+      <PrimaryPunchControl
+        locale={locale}
+        isCheckedIn={home.isCheckedIn}
+        isPending={punch.isPending}
+        disabled={!pos || !inside || !deviceApproved || unconfirmedNetwork || !gpsAdvisory.canPunch}
+        advisoryState={effectiveGpsState}
+        onPunch={() => punch.mutate()}
+      />
+
+      {/* Shift Summary & Recorded Intervals Card */}
+      <ShiftSummaryCard
+        locale={locale}
+        isCheckedIn={home.isCheckedIn}
+        timeline={home.timeline}
+        todayHours={home.todayHours ?? 0}
+      />
+
+      {/* Map preview */}
+      {site && pos ? (
+        <Panel className="p-3">
+          <OpsMap
+            className="h-44 w-full rounded-lg"
+            sites={[site]}
+            worker={{ lat: pos.lat, lng: pos.lng }}
+          />
+        </Panel>
       ) : null}
-
-      <section>
-        <Kicker>{t(locale, "timeline")}</Kicker>
-        {home.timeline.length === 0 ? (
-          <Empty>{t(locale, "emptyTimeline")}</Empty>
-        ) : (
-          <ul className="grid gap-2">
-            {home.timeline.map((row) => (
-              <li
-                key={row.id}
-                className="flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-2.5"
-              >
-                <div>
-                  <p className="text-sm font-medium">
-                    {row.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
-                    <span className="ms-2 text-muted">{row.site_name}</span>
-                  </p>
-                  <p className="font-mono text-xs text-faint">
-                    {new Date(row.created_at).toLocaleTimeString()} · {Math.round(row.distance_meters)} m
-                  </p>
-                </div>
-                <div className="flex flex-col items-end gap-1">
-                  <span className={`text-xs ${row.status === "inside" ? "text-ok" : "text-warn"}`}>
-                    {row.status === "inside" ? t(locale, "inside") : t(locale, "outside")}
-                  </span>
-                  <FlagChip reason={row.flag_reason} />
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div className="rounded-lg border border-line bg-surface px-3 py-3">
-          <p className="text-xs uppercase tracking-widest text-muted">{t(locale, "workedToday")}</p>
-          <p className="mt-1 font-mono text-xl">
-            {home.todayHours ?? 0}
-            <span className="ms-1 text-xs text-faint">{t(locale, "hoursNow")}</span>
-          </p>
-        </div>
-        <div className="rounded-lg border border-line bg-surface px-3 py-3">
-          <p className="text-xs uppercase tracking-widest text-muted">{t(locale, "today")}</p>
-          <p className="mt-1 font-mono text-xl">{home.today}</p>
-        </div>
-      </div>
 
       <HomeFeed locale={locale} />
 

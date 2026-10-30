@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HiTechNour FieldOps - QA Fixture (Employee & Admin Phase 2.2)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #070B12;
+      --surface: #0D1420;
+      --elevated: #121B2A;
+      --fg: #E8EDF5;
+      --muted: #8B97AB;
+      --faint: #5C6A80;
+      --line: #1C2738;
+      --emerald-bg: rgba(16, 185, 129, 0.12);
+      --emerald-border: rgba(16, 185, 129, 0.35);
+      --emerald-text: #34D399;
+      --amber-bg: rgba(245, 158, 11, 0.12);
+      --amber-border: rgba(245, 158, 11, 0.35);
+      --amber-text: #FBBF24;
+      --rose-bg: rgba(244, 63, 94, 0.12);
+      --rose-border: rgba(244, 63, 94, 0.35);
+      --rose-text: #FB7185;
+      --blue-bg: rgba(59, 130, 246, 0.12);
+      --blue-border: rgba(59, 130, 246, 0.35);
+      --blue-text: #60A5FA;
+      --primary: #4A8FF0;
+      --primary-fg: #FFFFFF;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #020408;
+      color: var(--fg);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 16px;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 16px;
+      background: var(--surface);
+      padding: 12px 16px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      max-width: 1100px;
+      width: 100%;
+      justify-content: center;
+      align-items: center;
+    }
+    .control-group {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .group-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-inline-end: 2px;
+    }
+    .btn {
+      background: var(--elevated);
+      color: var(--fg);
+      border: 1px solid var(--line);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn:hover {
+      background: #192438;
+      border-color: #2D3D56;
+    }
+    .btn.active {
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary);
+    }
+
+    /* Stage Container */
+    .viewport-stage {
+      background: var(--bg);
+      border: 2px solid var(--line);
+      border-radius: 24px;
+      overflow: hidden;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+      transition: width 0.2s ease;
+      min-height: 700px;
+      display: flex;
+      flex-direction: column;
+    }
+    .stage-header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .brand {
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 700;
+      font-size: 15px;
+      letter-spacing: -0.02em;
+    }
+    .stage-body {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    /* Design System Shared Components */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+    }
+    .card-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .card-main {
+      font-size: 16px;
+      font-weight: 700;
+      margin-top: 4px;
+      color: var(--fg);
+    }
+
+    /* Buttons Component */
+    .ui-btn {
+      font-family: inherit;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.15s;
+      border: 1px solid transparent;
+    }
+    .ui-btn-sm { height: 32px; padding: 0 10px; font-size: 12px; }
+    .ui-btn-md { height: 40px; padding: 0 16px; font-size: 14px; }
+    .ui-btn-lg { height: 48px; padding: 0 22px; font-size: 16px; border-radius: 10px; }
+    .ui-btn-icon { height: 36px; width: 36px; padding: 0; border-radius: 8px; }
+
+    .ui-btn-primary { background: var(--primary); color: #fff; }
+    .ui-btn-outline { background: var(--elevated); color: var(--fg); border-color: var(--line); }
+    .ui-btn-ghost { background: transparent; color: var(--muted); }
+    .ui-btn-ghost:hover { background: var(--elevated); color: var(--fg); }
+    .ui-btn-danger { background: rgba(244, 63, 94, 0.12); color: #FB7185; border-color: rgba(244, 63, 94, 0.35); }
+    .ui-btn-success { background: rgba(16, 185, 129, 0.12); color: #34D399; border-color: rgba(16, 185, 129, 0.35); }
+
+    /* StatusChips Component */
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 600;
+      border-radius: 9999px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+    .status-chip-sm { padding: 3px 8px; font-size: 11px; }
+    .status-chip-md { padding: 4px 10px; font-size: 12px; }
+    .status-chip-ok { background: var(--emerald-bg); border: 1px solid var(--emerald-border); color: var(--emerald-text); }
+    .status-chip-warn { background: var(--amber-bg); border: 1px solid var(--amber-border); color: var(--amber-text); }
+    .status-chip-bad { background: var(--rose-bg); border: 1px solid var(--rose-border); color: var(--rose-text); }
+    .status-chip-info { background: var(--blue-bg); border: 1px solid var(--blue-border); color: var(--blue-text); }
+    .status-chip-neutral { background: var(--elevated); border: 1px solid var(--line); color: var(--muted); }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+    /* Form Inputs */
+    .form-group { display: flex; flex-direction: column; gap: 4px; }
+    .form-label { font-size: 12px; font-weight: 600; color: var(--fg); }
+    .form-input {
+      background: var(--elevated);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      height: 40px;
+      padding: 0 12px;
+      color: var(--fg);
+      font-family: inherit;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .form-input:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(74, 143, 240, 0.25);
+    }
+    .form-input.error {
+      border-color: #FB7185;
+      box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.2);
+    }
+    .form-hint { font-size: 11px; color: var(--muted); }
+    .form-error { font-size: 11px; color: #FB7185; }
+
+    /* Responsive Table & Card Styles */
+    .table-container {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--surface);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: start;
+    }
+    th {
+      background: var(--elevated);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+    }
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255, 255, 255, 0.02); }
+
+    /* Mobile Cards */
+    .mobile-data-card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .mobile-card-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* Sidebar Navigation Mockup */
+    .sidebar-mock {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .nav-section-title {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 6px;
+      padding-inline-start: 4px;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--fg);
+      background: transparent;
+      cursor: pointer;
+    }
+    .nav-item.active {
+      background: rgba(74, 143, 240, 0.12);
+      color: var(--primary);
+      border-inline-start: 3px solid var(--primary);
+    }
+    .nav-badge {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 9999px;
+      line-height: 1;
+    }
+    .nav-badge.warn { background: var(--amber-bg); color: var(--amber-text); border: 1px solid var(--amber-border); }
+    .nav-badge.info { background: var(--blue-bg); color: var(--blue-text); border: 1px solid var(--blue-border); }
+
+    .mono { font-family: 'JetBrains Mono', monospace; }
+
+    /* Logical RTL styles */
+    [dir="rtl"] { direction: rtl; text-align: right; }
+    [dir="rtl"] table { text-align: right; }
+  </style>
+</head>
+<body>
+
+  <!-- Controls Bar -->
+  <div class="controls">
+    <div class="control-group">
+      <span class="group-label">View Mode:</span>
+      <button class="btn active" onclick="setMode('admin', this)">Admin &amp; Design System</button>
+      <button class="btn" onclick="setMode('employee', this)">Employee Mobile</button>
+    </div>
+
+    <div class="control-group" style="margin-inline-start: 8px;">
+      <span class="group-label">Width:</span>
+      <button class="btn" onclick="setWidth(360, this)">360px</button>
+      <button class="btn" onclick="setWidth(390, this)">390px</button>
+      <button class="btn" onclick="setWidth(430, this)">430px</button>
+      <button class="btn active" onclick="setWidth('100%', this)">Desktop (Full)</button>
+    </div>
+
+    <div class="control-group" style="margin-inline-start: 8px;">
+      <span class="group-label">Language / Dir:</span>
+      <button class="btn active" onclick="setLang('en', this)">English LTR</button>
+      <button class="btn" onclick="setLang('ar', this)">العربية RTL</button>
+    </div>
+  </div>
+
+  <!-- Stage Box -->
+  <div class="viewport-stage" id="stage" style="width: 100%; max-width: 1100px;" dir="ltr">
+    <div class="stage-header">
+      <span class="brand">HiTechNour FieldOps</span>
+      <span class="mono" style="font-size:11px; color:var(--muted)" id="stageBadge">Phase 2.2 Design System &amp; Responsive QA</span>
+    </div>
+
+    <div class="stage-body" id="stageBody">
+      <!-- Dynamically rendered -->
+    </div>
+  </div>
+
+  <script>
+    let currentMode = 'admin';
+    let currentWidth = '100%';
+    let currentLang = 'en';
+    let employeeState = 'normal';
+
+    const I18N = {
+      en: {
+        adminTitle: "Admin Shared Design Foundations & Responsive Views",
+        navOperations: "Operations",
+        navWorkforce: "Workforce",
+        navFieldComms: "Field & Comms",
+        navSystem: "System",
+        overview: "Overview",
+        liveFeed: "Live Feed",
+        queue: "Queue",
+        attendance: "Attendance",
+        leave: "Leave",
+        people: "People",
+        sites: "Sites",
+        reports: "Reports",
+        devices: "Devices",
+        log: "Audit Log",
+        settings: "Settings",
+        // Table columns
+        colEmployee: "Employee",
+        colSite: "Site",
+        colType: "Type",
+        colTime: "Time",
+        colDuration: "Duration",
+        colStatus: "Status",
+        colActor: "Actor",
+        colAction: "Action",
+        colDetail: "Detail",
+        // Form
+        formTitle: "Form Inputs, Validation & Focus States",
+        inputLabel: "Site Geofence Radius (meters)",
+        inputHint: "Recommended standard perimeter is 50 meters.",
+        inputError: "Radius must be a positive number greater than 0.",
+        // Duration section
+        durationTitle: "Integer-Minute Duration Consistency (src/lib/duration.ts)",
+        durationOld: "Decimal Hour (Old Format): 8.8h",
+        durationNew: "formatDurationMinutes(Math.round(8.85 * 60)) -> 08h 51m",
+        // Employee strings
+        siteName: "Al-Noor Complex - Building A",
+        siteRadius: "Radius: 50m",
+        shiftWindow: "08:00 AM - 05:00 PM",
+        assignedTitle: "Assigned Workplace",
+        intervalsTitle: "Recorded Attendance Today",
+        punchIn: "Check In",
+        punchOut: "Check Out",
+        locating: "Acquiring GPS fix...",
+        locatingDesc: "Waiting for high-accuracy GPS signal from device...",
+        ready: "Inside Site (Verified)",
+        readyDesc: "Acc: ±8m · 18m inside site boundary",
+        weak: "Inaccurate GPS fix",
+        weakDesc: "Uncertainty ±185m exceeds 150m threshold. Move to open sky.",
+        outside: "Outside Work Site",
+        outsideDesc: "You are 190m outside the designated site boundary.",
+        indoor: "Weak Reception / Verification Insufficient",
+        indoorDesc: "Location verification insufficient. Move closer to windows or outdoors to improve GPS signal.",
+        deviceTitle: "Device Pending Approval",
+        deviceBody: "This device must be approved by an administrator before attendance punches can be recorded.",
+        deviceId: "DEV-HTN-88392",
+        networkTitle: "Connection Timeout / Unconfirmed",
+        networkBody: "Could not confirm your punch with the server. Please do not submit repeatedly.",
+        refreshBtn: "Check Punch Status",
+        elapsedTitle: "Elapsed Shift Time",
+        elapsedTimer: "02h 45m 12s",
+        elapsedNotice: "Wall-clock timer (Informational only — not verified payable hours)",
+        completedBtn: "Shift Completed",
+        intervalActive: "08:14 AM — In Progress",
+        intervalDone: "08:14 AM – 05:05 PM",
+        totalDurationDone: "Total Duration: 08h 51m"
+      },
+      ar: {
+        adminTitle: "الأسس التصميمية المشتركة والعرض المتجاوب للوحة الإدارة",
+        navOperations: "العمليات التشغيلية",
+        navWorkforce: "القوى العاملة",
+        navFieldComms: "الميدان والمراسلات",
+        navSystem: "النظام",
+        overview: "نظرة عامة",
+        liveFeed: "البث المباشر",
+        queue: "قائمة المراجعة",
+        attendance: "الحضور والانصراف",
+        leave: "الإجازات",
+        people: "الموظفون",
+        sites: "المواقع",
+        reports: "التقارير",
+        devices: "الأجهزة",
+        log: "سجل التدقيق",
+        settings: "الإعدادات",
+        // Table columns
+        colEmployee: "الموظف",
+        colSite: "الموقع",
+        colType: "النوع",
+        colTime: "الوقت",
+        colDuration: "المدة",
+        colStatus: "الحالة",
+        colActor: "المستخدم",
+        colAction: "الإجراء",
+        colDetail: "التفاصيل",
+        // Form
+        formTitle: "حقول النماذج والتحقق وتأثيرات التركيز (Focus)",
+        inputLabel: "نطاق السياج الجغرافي للموقع (بالأمتار)",
+        inputHint: "النصف قطر القياسي الموصى به هو ٥٠ متراً.",
+        inputError: "يجب أن يكون نصف القطر رقماً موجباً أكبر من صفر.",
+        // Duration section
+        durationTitle: "توحيد حساب وعرض المدد بالدقائق الصحيحة (src/lib/duration.ts)",
+        durationOld: "العرض العشري القديم: 8.8h (٨.٨ ساعة)",
+        durationNew: "الصيغة المعتمدة: 08h 51m (٠٨س ٥١د عبر تحويل الساعات لدقائق صحيحة)",
+        // Employee strings
+        siteName: "مجمع النور - المبنى أ",
+        siteRadius: "نصف القطر: ٥٠م",
+        shiftWindow: "٠٨:٠٠ ص - ٠٥:٠٠ م",
+        assignedTitle: "موقع العمل المعيّن",
+        intervalsTitle: "سجل الحضور اليوم",
+        punchIn: "تسجيل الحضور",
+        punchOut: "تسجيل الانصراف",
+        locating: "جارٍ تحديد موقعك...",
+        locatingDesc: "بانتظار إشارة GPS عالية الدقة من الجهاز...",
+        ready: "داخل الموقع (مؤكد)",
+        readyDesc: "الدقة: ±٨م · على بعد ١٨م داخل حدود الموقع",
+        weak: "إشارة GPS ضعيفة وغير دقيقة",
+        weakDesc: "عدم دقة الموقع (±١٨٥م) تتجاوز حد ١٥٠م. يرجى الخروج لمنطقة مكشوفة.",
+        outside: "خارج حدود موقع العمل",
+        outsideDesc: "أنت على بعد ١٩٠م خارج النطاق الجغرافي للموقع.",
+        indoor: "إشارة ضعيفة / تعذر التحقق",
+        indoorDesc: "تعذر التحقق من الموقع بدقة كافية. يرجى الاقتراب من نافذة مفتوحة أو الخروج لتحسين إشارة GPS.",
+        deviceTitle: "الجهاز قيد انتظار موافقة الإدارة",
+        deviceBody: "يجب اعتماد هذا الجهاز من قِبل المسؤول قبل التمكن من تسجيل الحضور والانصراف.",
+        deviceId: "DEV-HTN-88392",
+        networkTitle: "انقطاع الاتصال / نتيجة غير مؤكدة",
+        networkBody: "تعذر تأكيد استلام البصمة من الخادم. يرجى عدم تكرار المحاولة فوراً.",
+        refreshBtn: "التحقق من حالة البصمة",
+        elapsedTitle: "الوقت المنقضي في الوردية",
+        elapsedTimer: "٠٢س ٤٥د ١٢ث",
+        elapsedNotice: "عداد استرشادي فقط — لا يمثل ساعات العمل المعتمدة نهائياً",
+        completedBtn: "اكتملت وردية اليوم",
+        intervalActive: "٠٨:١٤ ص — الوردية نشطة",
+        intervalDone: "٠٨:١٤ ص – ٠٥:٠٥ م",
+        totalDurationDone: "إجمالي المدة: 08h 51m (٠٨س ٥١د)"
+      }
+    };
+
+    function renderAdminView() {
+      const d = I18N[currentLang];
+      const isMobile = currentWidth !== '100%' && currentWidth <= 430;
+
+      return `
+        <!-- Section: Design System Foundations -->
+        <div class="card">
+          <div class="card-title">Shared Design System: Button Sizes &amp; Variants</div>
+          <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; align-items:center;">
+            <button class="ui-btn ui-btn-sm ui-btn-primary">Button sm</button>
+            <button class="ui-btn ui-btn-md ui-btn-primary">Button md</button>
+            <button class="ui-btn ui-btn-lg ui-btn-primary">Button lg</button>
+            <button class="ui-btn ui-btn-icon ui-btn-outline" title="Icon">⚙️</button>
+            <button class="ui-btn ui-btn-md ui-btn-outline">Outline</button>
+            <button class="ui-btn ui-btn-md ui-btn-ghost">Ghost</button>
+            <button class="ui-btn ui-btn-md ui-btn-danger">Danger</button>
+            <button class="ui-btn ui-btn-md ui-btn-success">Success</button>
+          </div>
+        </div>
+
+        <!-- Section: Semantic StatusChips -->
+        <div class="card">
+          <div class="card-title">Shared Design System: StatusChip Variants</div>
+          <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; align-items:center;">
+            <span class="status-chip status-chip-md status-chip-ok"><span class="status-dot"></span><span>Verified / Active</span></span>
+            <span class="status-chip status-chip-md status-chip-warn"><span class="status-dot"></span><span>Pending Review</span></span>
+            <span class="status-chip status-chip-md status-chip-bad"><span class="status-dot"></span><span>Outside Radius / Rejected</span></span>
+            <span class="status-chip status-chip-md status-chip-info"><span class="status-dot"></span><span>Approved Leave</span></span>
+            <span class="status-chip status-chip-md status-chip-neutral"><span>Standard / Closed</span></span>
+            <span class="status-chip status-chip-sm status-chip-warn"><span>Small warn</span></span>
+          </div>
+        </div>
+
+        <!-- Section: Duration Consistency -->
+        <div class="card">
+          <div class="card-title">${d.durationTitle}</div>
+          <div style="display:flex; flex-wrap:wrap; gap:16px; margin-top:10px;">
+            <div style="padding:10px 14px; background:var(--elevated); border:1px solid var(--line); border-radius:10px;">
+              <span style="font-size:12px; color:var(--muted);">${d.durationOld}</span>
+            </div>
+            <div style="padding:10px 14px; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); border-radius:10px;">
+              <span class="mono" style="font-size:13px; font-weight:700; color:var(--emerald-text);">✓ ${d.durationNew}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Section: Form Inputs & Validation -->
+        <div class="card">
+          <div class="card-title">${d.formTitle}</div>
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:14px; margin-top:12px;">
+            <div class="form-group">
+              <label class="form-label">${d.inputLabel}</label>
+              <input class="form-input" value="50" placeholder="e.g. 50">
+              <span class="form-hint">${d.inputHint}</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label">${d.inputLabel} (Error State)</label>
+              <input class="form-input error" value="-10">
+              <span class="form-error">✕ ${d.inputError}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Section: Desktop 4-Group Sidebar Navigation with Live Badges -->
+        <div class="card">
+          <div class="card-title">Navigation: 4 Semantic Sidebar Groups with Live Badges</div>
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-top:12px;">
+            <!-- Operations -->
+            <div class="sidebar-mock">
+              <div class="nav-section-title">${d.navOperations}</div>
+              <div class="nav-item active"><span>📊 ${d.overview}</span></div>
+              <div class="nav-item"><span>📡 ${d.liveFeed}</span></div>
+              <div class="nav-item"><span>⚠️ ${d.queue}</span><span class="nav-badge warn">3</span></div>
+              <div class="nav-item"><span>⏱️ ${d.attendance}</span></div>
+            </div>
+            <!-- Workforce -->
+            <div class="sidebar-mock">
+              <div class="nav-section-title">${d.navWorkforce}</div>
+              <div class="nav-item"><span>👥 ${d.people}</span></div>
+              <div class="nav-item"><span>🌴 ${d.leave}</span><span class="nav-badge info">1</span></div>
+            </div>
+            <!-- Field & Comms -->
+            <div class="sidebar-mock">
+              <div class="nav-section-title">${d.navFieldComms}</div>
+              <div class="nav-item"><span>📍 ${d.sites}</span></div>
+              <div class="nav-item"><span>📑 ${d.reports}</span><span class="nav-badge warn">2</span></div>
+            </div>
+            <!-- System -->
+            <div class="sidebar-mock">
+              <div class="nav-section-title">${d.navSystem}</div>
+              <div class="nav-item"><span>📱 ${d.devices}</span></div>
+              <div class="nav-item"><span>🛡️ ${d.log}</span></div>
+              <div class="nav-item"><span>⚙️ ${d.settings}</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Section: Attendance Responsive Dual Presentation -->
+        <div class="card">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div class="card-title">Responsive Attendance: ${isMobile ? 'Mobile Card View' : 'Desktop Aligned Table'}</div>
+            <span class="mono" style="font-size:11px; color:var(--muted)">${isMobile ? 'Cards @ <=430px' : 'Table @ Desktop'}</span>
+          </div>
+
+          ${isMobile ? `
+            <!-- Mobile Cards -->
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <div class="mobile-data-card">
+                <div class="mobile-card-row">
+                  <span style="font-weight:700; font-size:14px;">Ahmed Hassan</span>
+                  <span class="status-chip status-chip-sm status-chip-ok"><span class="status-dot"></span><span>Clean</span></span>
+                </div>
+                <div class="mobile-card-row" style="font-size:12px; color:var(--muted);">
+                  <span>📍 Site: Al-Noor Complex</span>
+                  <span class="mono">▶️ In: 08:14</span>
+                </div>
+                <div class="mobile-card-row" style="font-size:12px; border-top:1px solid var(--line); padding-top:6px;">
+                  <span class="mono" style="color:var(--emerald-text); font-weight:700;">Duration: 08h 51m</span>
+                  <span class="mono" style="color:var(--muted);">⏹️ Out: 17:05</span>
+                </div>
+              </div>
+
+              <div class="mobile-data-card">
+                <div class="mobile-card-row">
+                  <span style="font-weight:700; font-size:14px;">Mahmoud Ali</span>
+                  <span class="status-chip status-chip-sm status-chip-warn"><span class="status-dot"></span><span>Flagged</span></span>
+                </div>
+                <div class="mobile-card-row" style="font-size:12px; color:var(--muted);">
+                  <span>📍 Site: South Branch</span>
+                  <span class="mono">▶️ In: 09:30</span>
+                </div>
+                <div class="mobile-card-row" style="font-size:12px; border-top:1px solid var(--line); padding-top:6px;">
+                  <span class="mono" style="color:var(--amber-text); font-weight:700;">Shift In Progress</span>
+                  <span style="font-size:11px; color:var(--amber-text);">Perimeter (+22m)</span>
+                </div>
+              </div>
+            </div>
+          ` : `
+            <!-- Desktop Table -->
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>${d.colEmployee}</th>
+                    <th>${d.colSite}</th>
+                    <th>${d.colType}</th>
+                    <th>${d.colTime}</th>
+                    <th>${d.colDuration}</th>
+                    <th>${d.colStatus}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td style="font-weight:600;">Ahmed Hassan</td>
+                    <td>Al-Noor Complex - A</td>
+                    <td><span class="mono" style="color:var(--emerald-text);">IN</span></td>
+                    <td class="mono">08:14 AM</td>
+                    <td class="mono" style="color:var(--emerald-text); font-weight:700;">08h 51m</td>
+                    <td><span class="status-chip status-chip-sm status-chip-ok"><span class="status-dot"></span><span>Clean</span></span></td>
+                  </tr>
+                  <tr>
+                    <td style="font-weight:600;">Mahmoud Ali</td>
+                    <td>South Branch</td>
+                    <td><span class="mono" style="color:var(--primary);">IN</span></td>
+                    <td class="mono">09:30 AM</td>
+                    <td class="mono" style="color:var(--muted);">In Progress</td>
+                    <td><span class="status-chip status-chip-sm status-chip-warn"><span class="status-dot"></span><span>Flagged (Perimeter)</span></span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          `}
+        </div>
+
+        <!-- Section: Audit Log Responsive Dual Presentation -->
+        <div class="card">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div class="card-title">Responsive Audit Log: ${isMobile ? 'Mobile Card View' : 'Desktop Sticky Header Table'}</div>
+          </div>
+
+          ${isMobile ? `
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <div class="mobile-data-card">
+                <div class="mobile-card-row">
+                  <span class="mono" style="font-size:11px; color:var(--muted);">2026-10-30 08:14:22</span>
+                  <span class="status-chip status-chip-sm status-chip-info"><span>PUNCH</span></span>
+                </div>
+                <div style="font-weight:600; font-size:13px;">Ahmed Hassan · punch:checkin</div>
+                <div class="mono" style="font-size:11px; color:var(--muted); background:var(--elevated); padding:6px 8px; border-radius:6px; word-break:break-all;">
+                  site_id=site-cairo-1 accuracy=8.2m dist=18m verified=true
+                </div>
+              </div>
+
+              <div class="mobile-data-card">
+                <div class="mobile-card-row">
+                  <span class="mono" style="font-size:11px; color:var(--muted);">2026-10-30 08:30:10</span>
+                  <span class="status-chip status-chip-sm status-chip-ok"><span>DEVICE</span></span>
+                </div>
+                <div style="font-weight:600; font-size:13px;">Admin Nour · device:approve</div>
+                <div class="mono" style="font-size:11px; color:var(--muted); background:var(--elevated); padding:6px 8px; border-radius:6px; word-break:break-all;">
+                  employee=EMP-104 fp=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+                </div>
+              </div>
+            </div>
+          ` : `
+            <div class="table-container" style="max-height:240px; overflow-y:auto;">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>${d.colActor}</th>
+                    <th>${d.colAction}</th>
+                    <th>${d.colDetail}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="mono" style="font-size:12px; color:var(--muted); white-space:nowrap;">2026-10-30 08:14:22</td>
+                    <td style="font-weight:600;">Ahmed Hassan</td>
+                    <td><span class="status-chip status-chip-sm status-chip-info"><span>punch:checkin</span></span></td>
+                    <td class="mono" style="font-size:12px; color:var(--muted);">site=Al-Noor Complex acc=8.2m dist=18m verified=true</td>
+                  </tr>
+                  <tr>
+                    <td class="mono" style="font-size:12px; color:var(--muted); white-space:nowrap;">2026-10-30 08:30:10</td>
+                    <td style="font-weight:600;">Admin Nour</td>
+                    <td><span class="status-chip status-chip-sm status-chip-ok"><span>device:approve</span></span></td>
+                    <td class="mono" style="font-size:12px; color:var(--muted);">device=DEV-HTN-88392 employee=EMP-104</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          `}
+        </div>
+      `;
+    }
+
+    function renderEmployeeView() {
+      const d = I18N[currentLang];
+      let bannerHtml = '';
+      let chipHtml = '';
+      let buttonHtml = '';
+      let shiftHtml = '';
+
+      if (employeeState === 'device_pending') {
+        bannerHtml = `
+          <div style="background:var(--amber-bg); border:1px solid var(--amber-border); border-radius:12px; padding:12px 14px; color:var(--amber-text); font-size:12px; line-height:1.4;">
+            <div style="font-weight:700; font-size:13px; margin-bottom:2px;">🔒 ${d.deviceTitle}</div>
+            <div>${d.deviceBody}</div>
+            <div class="mono" style="margin-top:6px; font-size:11px; opacity:0.8;">ID: ${d.deviceId}</div>
+          </div>
+        `;
+      }
+
+      chipHtml = `
+        <div style="background:var(--emerald-bg); border:1px solid var(--emerald-border); border-radius:12px; padding:12px 14px; color:var(--emerald-text); display:flex; flex-direction:column; gap:4px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; font-weight:700; font-size:13px;">
+            <span>🟢 ${d.ready}</span>
+            <span class="mono">±8m</span>
+          </div>
+          <div style="font-size:12px; color:var(--muted);">${d.readyDesc}</div>
+        </div>
+      `;
+
+      buttonHtml = `
+        <button style="height:60px; width:100%; border-radius:16px; font-size:16px; font-weight:700; border:none; cursor:pointer; background:var(--primary); color:#fff; display:flex; align-items:center; justify-content:center; gap:8px;">
+          <span>▶️ ${d.punchIn}</span>
+        </button>
+      `;
+
+      shiftHtml = `
+        <div class="card">
+          <div class="card-title">${d.intervalsTitle}</div>
+          <div style="margin-top:8px; font-size:13px; color:var(--muted); text-align:center; padding:12px 0;">No punches recorded yet today.</div>
+        </div>
+      `;
+
+      return `
+        ${bannerHtml}
+        <div class="card">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+            <div>
+              <div class="card-title">${d.assignedTitle}</div>
+              <div class="card-main">${d.siteName}</div>
+            </div>
+            <span class="mono" style="font-size:11px; background:var(--elevated); padding:3px 8px; border-radius:12px; border:1px solid var(--line); color:var(--muted);">${d.siteRadius}</span>
+          </div>
+          <div style="margin-top:6px; font-size:12px; color:var(--muted);">⏰ ${d.shiftWindow}</div>
+        </div>
+        ${chipHtml}
+        ${buttonHtml}
+        ${shiftHtml}
+      `;
+    }
+
+    function render() {
+      const sb = document.getElementById('stageBody');
+      const sBadge = document.getElementById('stageBadge');
+      if (currentMode === 'admin') {
+        sBadge.textContent = 'Admin Redesign & Design System QA (Phase 2.2)';
+        sb.innerHTML = renderAdminView();
+      } else {
+        sBadge.textContent = 'Employee Mobile Attendance QA (Phase 2.1)';
+        sb.innerHTML = renderEmployeeView();
+      }
+    }
+
+    function setMode(mode, el) {
+      currentMode = mode;
+      highlight(el);
+      render();
+    }
+
+    function setWidth(w, el) {
+      currentWidth = w;
+      const stage = document.getElementById('stage');
+      stage.style.width = typeof w === 'number' ? w + 'px' : w;
+      highlight(el);
+      render();
+    }
+
+    function setLang(lang, el) {
+      currentLang = lang;
+      document.getElementById('stage').setAttribute('dir', lang === 'ar' ? 'rtl' : 'ltr');
+      highlight(el);
+      render();
+    }
+
+    function highlight(btn) {
+      btn.parentElement.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    }
+
+    render();
+  </script>
+</body>
+</html>

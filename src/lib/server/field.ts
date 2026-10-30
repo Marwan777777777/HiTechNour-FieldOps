@@ -54,7 +54,8 @@ export const bootstrap = createServerFn({ method: "POST" })
     } else if (!existing.active) {
       // Deactivated by an admin: stays deactivated. Only an admin can re-activate.
       throw new Error("ACCOUNT_DEACTIVATED");
-    } else {
+    } else if (existing.role === "admin") {
+      // Admin accounts are exempt from employee device-binding gates
       await sql`
         update profiles
         set device_approved = true,
@@ -355,8 +356,7 @@ export const saveBiometric = createServerFn({ method: "POST" })
     await sql`
       update profiles
       set pending_device_webauthn_id = ${id},
-          device_webauthn_id = coalesce(device_webauthn_id, ${id}),
-          device_approved = true
+          device_webauthn_id = coalesce(device_webauthn_id, ${id})
       where user_id = ${context.userId}`;
     return { ok: true };
   });

@@ -29,6 +29,7 @@ import {
   activityLog,
   adminOverview,
   adminReports,
+  approveDevice,
   closeOpenShift,
   exportAttendanceCsv,
   exportPayrollCsv,
@@ -72,6 +73,9 @@ import { HoursHeat } from "./hours-heat";
 import { OpsMap } from "./ops-map";
 import { WorkerApp } from "./worker-app";
 
+import { formatDurationMinutes } from "@/lib/duration";
+import { StatusChip } from "@/components/ui/status-chip";
+
 type AdminTab =
   | "overview"
   | "queue"
@@ -87,25 +91,54 @@ type AdminTab =
   | "export"
   | "field";
 
-const NAV: { id: AdminTab; label: Msg; icon: typeof LayoutDashboard }[] = [
-  { id: "overview", label: "overview", icon: LayoutDashboard },
-  { id: "queue", label: "queue", icon: Flag },
-  { id: "people", label: "people", icon: Users },
-  { id: "attendance", label: "attendance", icon: History },
-  { id: "schedule", label: "schedule", icon: CalendarDays },
-  { id: "sites", label: "sites", icon: MapPin },
-  { id: "skills", label: "skills", icon: Sparkles },
-  { id: "reports", label: "reports", icon: ClipboardList },
-  { id: "leave", label: "leave", icon: Palmtree },
-  { id: "broadcast", label: "broadcast", icon: Megaphone },
-  { id: "log", label: "log", icon: ScrollText },
-  { id: "export", label: "export", icon: Download },
-  { id: "field", label: "fieldPunch", icon: MapPin },
+interface NavItem {
+  id: AdminTab;
+  label: Msg;
+  icon: typeof LayoutDashboard;
+}
+
+const NAV_SECTIONS: {
+  titleKey: Msg;
+  items: NavItem[];
+}[] = [
+  {
+    titleKey: "navOperations",
+    items: [
+      { id: "overview", label: "overview", icon: LayoutDashboard },
+      { id: "queue", label: "queue", icon: Flag },
+      { id: "attendance", label: "attendance", icon: History },
+      { id: "schedule", label: "schedule", icon: CalendarDays },
+      { id: "sites", label: "sites", icon: MapPin },
+    ],
+  },
+  {
+    titleKey: "navWorkforce",
+    items: [
+      { id: "people", label: "people", icon: Users },
+      { id: "skills", label: "skills", icon: Sparkles },
+      { id: "leave", label: "leave", icon: Palmtree },
+    ],
+  },
+  {
+    titleKey: "navFieldComms",
+    items: [
+      { id: "reports", label: "reports", icon: ClipboardList },
+      { id: "broadcast", label: "broadcast", icon: Megaphone },
+      { id: "field", label: "fieldPunch", icon: MapPin },
+    ],
+  },
+  {
+    titleKey: "navSystem",
+    items: [
+      { id: "log", label: "log", icon: ScrollText },
+      { id: "export", label: "export", icon: Download },
+    ],
+  },
 ];
 
-// On phones we only have room for a handful of thumb-reachable tabs. These
-// are the ones admins reach for constantly (per the mobile UX pass); the
-// rest live behind "More" so the bar never needs a 13-way <select>.
+const ALL_NAV_ITEMS = NAV_SECTIONS.flatMap((s) => s.items);
+
+// Mobile thumb-reachable primary tabs
 const MOBILE_PRIMARY: AdminTab[] = ["overview", "queue", "people", "attendance", "sites"];
 
 function loginName(row: { username?: string | null; email?: string | null }) {
@@ -145,36 +178,82 @@ export function AdminApp({
 }) {
   const [tab, setTab] = useState<AdminTab>("overview");
   const [moreOpen, setMoreOpen] = useState(false);
-  const moreTabs = NAV.filter((item) => !MOBILE_PRIMARY.includes(item.id));
+  const moreTabs = ALL_NAV_ITEMS.filter((item) => !MOBILE_PRIMARY.includes(item.id));
   const activeInMore = moreTabs.some((item) => item.id === tab);
+
+  // Live overview metrics for navigation badges (shares query cache with Overview component)
+  const overviewQuery = useQuery({
+    queryKey: ["htn-overview"],
+    queryFn: () => adminOverview(),
+    refetchInterval: 30_000,
+  });
+
+  const getBadgeCount = (itemKey: AdminTab): number | undefined => {
+    if (!overviewQuery.data) return undefined;
+    if (itemKey === "queue") {
+      const count = overviewQuery.data.flagged + (overviewQuery.data.pending ?? 0);
+      return count > 0 ? count : undefined;
+    }
+    if (itemKey === "leave") {
+      return overviewQuery.data.pendingLeave > 0 ? overviewQuery.data.pendingLeave : undefined;
+    }
+    if (itemKey === "reports") {
+      return overviewQuery.data.openReports > 0 ? overviewQuery.data.openReports : undefined;
+    }
+    return undefined;
+  };
+
+  const moreBadgeTotal = moreTabs.reduce((acc, item) => acc + (getBadgeCount(item.id) ?? 0), 0);
 
   return (
     <div className="flex min-h-dvh">
-      <aside className="sticky top-0 hidden h-dvh w-56 shrink-0 flex-col overflow-y-auto border-e border-line bg-surface md:flex">
-        <div className="flex items-center gap-3 px-3 py-4">
-          <BrandMark className="h-12 w-auto" />
-          <p className="font-display text-sm font-semibold">{t(locale, "adminDesk")}</p>
+      {/* Desktop Grouped Sidebar Navigation */}
+      <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col overflow-y-auto border-e border-line bg-surface md:flex">
+        <div className="flex items-center gap-3 px-4 py-4 border-b border-line/60">
+          <BrandMark className="h-10 w-auto" />
+          <div>
+            <p className="font-display text-sm font-bold tracking-tight text-fg">{t(locale, "adminDesk")}</p>
+            <span className="font-mono text-[10px] text-faint">HiTechNour FieldOps</span>
+          </div>
         </div>
-        <nav className="grid gap-0.5 px-2">
-          {NAV.map((item) => {
-            const Icon = item.icon;
-            const active = tab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setTab(item.id)}
-                className={`flex min-h-11 items-center gap-2 rounded-lg px-3 text-sm ${
-                  active ? "bg-elevated text-fg" : "text-muted hover:text-fg"
-                }`}
-              >
-                <Icon className="size-4" />
-                {t(locale, item.label)}
-              </button>
-            );
-          })}
+        <nav className="flex-1 space-y-4 px-2.5 py-3">
+          {NAV_SECTIONS.map((section) => (
+            <div key={section.titleKey} className="space-y-0.5">
+              <h3 className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-muted/70">
+                {t(locale, section.titleKey)}
+              </h3>
+              {section.items.map((item) => {
+                const Icon = item.icon;
+                const active = tab === item.id;
+                const badge = getBadgeCount(item.id);
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setTab(item.id)}
+                    className={`flex min-h-10 w-full items-center justify-between rounded-lg px-3 text-sm font-medium transition-colors ${
+                      active
+                        ? "bg-elevated font-semibold text-fg shadow-xs"
+                        : "text-muted hover:bg-elevated/40 hover:text-fg"
+                    }`}
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <Icon className={`size-4 ${active ? "text-primary" : "text-muted"}`} />
+                      <span>{t(locale, item.label)}</span>
+                    </span>
+                    {badge != null ? (
+                      <span className="rounded-full bg-warn/20 px-1.5 py-0.2 font-mono text-[10px] font-bold text-warn">
+                        {badge}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
       </aside>
+
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex-1 overflow-auto p-4 pb-24 md:p-6 md:pb-6">
           {tab === "overview" ? <Overview locale={locale} /> : null}
@@ -193,25 +272,31 @@ export function AdminApp({
         </div>
       </div>
 
-      {/* Mobile bottom tab bar — replaces the old <select> nav, which sat
-          above the fold and gave no feedback that it was the way to switch
-          screens. This mirrors the worker app's bottom nav pattern. */}
+      {/* Mobile bottom tab bar */}
       <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-bg/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
         <ul className="grid grid-cols-6">
-          {NAV.filter((item) => MOBILE_PRIMARY.includes(item.id)).map((item) => {
+          {ALL_NAV_ITEMS.filter((item) => MOBILE_PRIMARY.includes(item.id)).map((item) => {
             const Icon = item.icon;
             const active = tab === item.id;
+            const badge = getBadgeCount(item.id);
             return (
               <li key={item.id}>
                 <button
                   type="button"
                   onClick={() => setTab(item.id)}
-                  className={`flex min-h-14 w-full flex-col items-center justify-center gap-0.5 px-0.5 text-[11px] ${
-                    active ? "text-fg" : "text-faint"
+                  className={`relative flex min-h-14 w-full flex-col items-center justify-center gap-1 px-0.5 text-[11px] font-medium transition-colors ${
+                    active ? "font-bold text-fg" : "text-faint hover:text-muted"
                   }`}
                 >
-                  <Icon className="size-4" />
-                  {t(locale, item.label)}
+                  <div className="relative">
+                    <Icon className="size-4" />
+                    {badge != null ? (
+                      <span className="absolute -top-1 -end-2.5 flex min-w-3.5 items-center justify-center rounded-full bg-warn px-1 font-mono text-[9px] font-bold text-bg">
+                        {badge}
+                      </span>
+                    ) : null}
+                  </div>
+                  <span className="truncate max-w-[52px]">{t(locale, item.label)}</span>
                 </button>
               </li>
             );
@@ -220,22 +305,31 @@ export function AdminApp({
             <button
               type="button"
               onClick={() => setMoreOpen(true)}
-              className={`flex min-h-14 w-full flex-col items-center justify-center gap-0.5 px-0.5 text-[11px] ${
-                activeInMore ? "text-fg" : "text-faint"
+              className={`relative flex min-h-14 w-full flex-col items-center justify-center gap-1 px-0.5 text-[11px] font-medium transition-colors ${
+                activeInMore ? "font-bold text-fg" : "text-faint hover:text-muted"
               }`}
             >
-              <MoreHorizontal className="size-4" />
-              {t(locale, "more")}
+              <div className="relative">
+                <MoreHorizontal className="size-4" />
+                {moreBadgeTotal > 0 ? (
+                  <span className="absolute -top-1 -end-2 flex min-w-3 items-center justify-center rounded-full bg-warn px-0.5 font-mono text-[8px] font-bold text-bg">
+                    {moreBadgeTotal}
+                  </span>
+                ) : null}
+              </div>
+              <span>{t(locale, "more")}</span>
             </button>
           </li>
         </ul>
       </nav>
 
+      {/* Mobile More Sheet */}
       <Sheet open={moreOpen} onOpenChange={setMoreOpen} title={t(locale, "moreMenuTitle")}>
-        <ul className="grid gap-0.5">
+        <ul className="grid gap-1">
           {moreTabs.map((item) => {
             const Icon = item.icon;
             const active = tab === item.id;
+            const badge = getBadgeCount(item.id);
             return (
               <li key={item.id}>
                 <button
@@ -244,12 +338,19 @@ export function AdminApp({
                     setTab(item.id);
                     setMoreOpen(false);
                   }}
-                  className={`flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-sm ${
-                    active ? "bg-elevated text-fg" : "text-muted"
+                  className={`flex min-h-12 w-full items-center justify-between rounded-lg px-3 text-sm font-medium transition-colors ${
+                    active ? "bg-elevated font-semibold text-fg" : "text-muted hover:bg-elevated/40 hover:text-fg"
                   }`}
                 >
-                  <Icon className="size-4" />
-                  {t(locale, item.label)}
+                  <span className="flex items-center gap-3">
+                    <Icon className="size-4" />
+                    <span>{t(locale, item.label)}</span>
+                  </span>
+                  {badge != null ? (
+                    <span className="rounded-full bg-warn/20 px-2 py-0.5 font-mono text-xs font-bold text-warn">
+                      {badge}
+                    </span>
+                  ) : null}
                 </button>
               </li>
             );
@@ -330,25 +431,27 @@ function Overview({ locale }: { locale: Locale }) {
                       {row.site_name}
                     </span>
                     {row.isOpenShift ? (
-                      <span className={`ms-2 text-xs ${row.stale ? "text-warn" : "text-ok"}`}>
-                        {row.stale ? t(locale, "staleShift") : `${Math.round((row.hoursOpen ?? 0) * 10) / 10}h`}
+                      <span className={`ms-2 font-mono text-xs font-medium ${row.stale ? "text-warn" : "text-ok"}`}>
+                        {row.stale ? t(locale, "staleShift") : formatDurationMinutes(Math.round((row.hoursOpen ?? 0) * 60))}
                       </span>
                     ) : null}
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-3">
                   <p className="font-mono text-xs text-faint">
-                    {new Date(row.created_at).toLocaleTimeString()}
+                    {new Date(row.created_at).toLocaleTimeString(locale === "ar" ? "ar-EG" : "en-US")}
                     {" · "}
                     {Math.round(row.distance_meters)} m
                     {row.status === "outside" ? (
-                      <span className="ms-2 text-warn">{t(locale, "outside")}</span>
+                      <span className="ms-2">
+                        <StatusChip size="sm" variant="warn">{t(locale, "outside")}</StatusChip>
+                      </span>
                     ) : null}
                   </p>
                   {row.isOpenShift ? (
                     <Button
                       variant="ghost"
-                      className="h-8 px-2 text-xs"
+                      size="sm"
                       disabled={closeShift.isPending}
                       onClick={() => closeShift.mutate(row.user_id)}
                     >
@@ -446,16 +549,52 @@ function Queue({ locale }: { locale: Locale }) {
               <li key={p.user_id} className="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-3">
                 <div>
                   <p className="text-sm font-medium">{p.full_name || p.email}</p>
-                  <p className="font-mono text-xs text-faint">{t(locale, "accountPending")}</p>
+                  <p className="font-mono text-xs text-faint">
+                    {p.pending_device_id ? t(locale, "pendingDeviceTitle") : t(locale, "accountPending")}
+                  </p>
+                  {p.pending_device_id ? (
+                    <p className="font-mono text-[11px] text-faint truncate max-w-[200px]" title={p.pending_device_id}>
+                      {p.pending_device_id}
+                    </p>
+                  ) : null}
                 </div>
-                <Button
-                  onClick={async () => {
-                    await setWorkerActive({ data: { userId: p.user_id, active: true } });
-                    refresh();
-                  }}
-                >
-                  {t(locale, "activate")}
-                </Button>
+                <div className="flex gap-2">
+                  {p.pending_device_id ? (
+                    <Button
+                      onClick={async () => {
+                        try {
+                          await approveDevice({
+                            data: {
+                              userId: p.user_id,
+                              expectedDeviceId: p.pending_device_id!,
+                            },
+                          });
+                        } catch (err: unknown) {
+                          const msg = err instanceof Error ? err.message : String(err);
+                          if (msg.includes("DEVICE_REQUEST_CHANGED") || msg.includes("NO_PENDING_DEVICE")) {
+                            toast.error(t(locale, "deviceRequestChanged"));
+                          } else {
+                            toast.error(msg);
+                          }
+                        }
+                        refresh();
+                      }}
+                    >
+                      {t(locale, "approveDevice")}
+                    </Button>
+                  ) : null}
+                  {!p.active ? (
+                    <Button
+                      variant={p.pending_device_id ? "outline" : "primary"}
+                      onClick={async () => {
+                        await setWorkerActive({ data: { userId: p.user_id, active: true } });
+                        refresh();
+                      }}
+                    >
+                      {t(locale, "activate")}
+                    </Button>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>
@@ -975,7 +1114,10 @@ function Attendance({ locale }: { locale: Locale }) {
               <>
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                   <Stat label={t(locale, "attDaysPresent")} value={history.data.summary.daysPresent} />
-                  <Stat label={t(locale, "attTotalHours")} value={`${history.data.summary.totalHours}h`} />
+                  <Stat
+                    label={t(locale, "attTotalHours")}
+                    value={formatDurationMinutes(Math.round(history.data.summary.totalHours * 60))}
+                  />
                   <Stat
                     label={t(locale, "attFlaggedCount")}
                     value={history.data.summary.flaggedCount}
@@ -999,70 +1141,135 @@ function Attendance({ locale }: { locale: Locale }) {
                           <button
                             type="button"
                             onClick={() => setOpenDay(isOpen ? null : d.day)}
-                            className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-start"
+                            className="flex w-full items-center justify-between gap-3 px-3.5 py-3 text-start hover:bg-surface/50 transition-colors"
                           >
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2.5">
                               {isOpen ? <ChevronDown className="size-4 text-faint" /> : <ChevronRight className="size-4 text-faint" />}
-                              <span className="font-mono text-sm font-medium">{d.day}</span>
-                              <span className="text-xs text-faint">{d.siteNames.join(", ")}</span>
+                              <span className="font-mono text-sm font-semibold text-fg">{d.day}</span>
+                              <span className="text-xs text-muted truncate max-w-[200px]">{d.siteNames.join(", ")}</span>
                             </div>
                             <div className="flex items-center gap-2">
                               {d.flaggedCount > 0 ? (
-                                <span className="rounded-full bg-warn/15 px-2 py-0.5 font-mono text-xs text-warn">
+                                <StatusChip size="sm" variant="warn">
                                   {d.flaggedCount} {t(locale, "attFlaggedCount").toLowerCase()}
-                                </span>
+                                </StatusChip>
                               ) : null}
                               {d.openShift ? (
-                                <span className="rounded-full bg-warn/15 px-2 py-0.5 font-mono text-xs text-warn">
+                                <StatusChip size="sm" variant="warn">
                                   {t(locale, "attOpenShift")}
-                                </span>
+                                </StatusChip>
                               ) : null}
-                              <span className="font-mono text-sm text-muted">
-                                {d.hours} {t(locale, "attHours")}
+                              <span className="font-mono text-sm font-bold text-fg">
+                                {formatDurationMinutes(Math.round(d.hours * 60))}
                               </span>
                             </div>
                           </button>
                           {isOpen ? (
-                            <ul className="grid gap-1 border-t border-line px-3 py-2">
-                              {d.punches.map((p) => (
-                                <li
-                                  key={p.id}
-                                  className="flex flex-wrap items-center justify-between gap-2 py-1 text-sm"
-                                >
-                                  <span className="flex items-center gap-2">
-                                    <span className="font-medium">
-                                      {p.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
-                                    </span>
-                                    <span className="text-faint">· {p.site_name}</span>
-                                    <span className="font-mono text-xs text-faint">
-                                      {new Date(p.created_at).toLocaleTimeString(locale === "ar" ? "ar-EG" : "en-US")}
-                                    </span>
-                                  </span>
-                                  <span className="flex items-center gap-2">
-                                    <span className="font-mono text-xs text-faint">
-                                      {Math.round(p.distance_meters)} m
-                                      {p.accuracy_meters != null ? ` · ±${Math.round(p.accuracy_meters)} m` : ""}
-                                    </span>
-                                    <FlagChip reason={p.flag_reason} />
-                                    <Button
-                                      variant="ghost"
-                                      className="h-7 px-2 text-xs"
-                                      onClick={() =>
-                                        setMapPunch({
-                                          lat: p.lat,
-                                          lng: p.lng,
-                                          site_name: p.site_name,
-                                          created_at: p.created_at,
-                                          type: p.type,
-                                        })
-                                      }
-                                    >
-                                      <MapPin className="size-3.5" />
-                                    </Button>
-                                  </span>
-                                </li>
-                              ))}
-                            </ul>
+                            <div className="border-t border-line bg-surface/30">
+                              {/* Desktop Table View (>= 768px) */}
+                              <div className="hidden md:block overflow-x-auto">
+                                <table className="w-full text-start text-xs">
+                                  <thead>
+                                    <tr className="border-b border-line/60 bg-surface/50 text-[11px] uppercase tracking-wider text-muted">
+                                      <th className="py-2.5 ps-4 text-start font-semibold">{t(locale, "colType")}</th>
+                                      <th className="py-2.5 text-start font-semibold">{t(locale, "site")}</th>
+                                      <th className="py-2.5 text-start font-semibold">{t(locale, "colTime")}</th>
+                                      <th className="py-2.5 text-start font-semibold">{t(locale, "distance")}</th>
+                                      <th className="py-2.5 text-start font-semibold">{t(locale, "accuracy")}</th>
+                                      <th className="py-2.5 text-start font-semibold">{t(locale, "colStatus")}</th>
+                                      <th className="py-2.5 pe-4 text-end font-semibold">{t(locale, "colMap")}</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-line/40">
+                                    {d.punches.map((p) => (
+                                      <tr key={p.id} className="hover:bg-elevated/40 transition-colors">
+                                        <td className="py-2.5 ps-4 font-semibold text-fg">
+                                          <span className="flex items-center gap-1.5">
+                                            <span className={`size-2 rounded-full ${p.type === "check_in" ? "bg-ok" : "bg-bad"}`} />
+                                            {p.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
+                                          </span>
+                                        </td>
+                                        <td className="py-2.5 text-muted">{p.site_name}</td>
+                                        <td className="py-2.5 font-mono text-muted">
+                                          {new Date(p.created_at).toLocaleTimeString(locale === "ar" ? "ar-EG" : "en-US")}
+                                        </td>
+                                        <td className="py-2.5 font-mono text-faint">{Math.round(p.distance_meters)} m</td>
+                                        <td className="py-2.5 font-mono text-faint">
+                                          {p.accuracy_meters != null ? `±${Math.round(p.accuracy_meters)} m` : "—"}
+                                        </td>
+                                        <td className="py-2.5">
+                                          <FlagChip reason={p.flag_reason} />
+                                        </td>
+                                        <td className="py-2.5 pe-4 text-end">
+                                          <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="size-7"
+                                            onClick={() =>
+                                              setMapPunch({
+                                                lat: p.lat,
+                                                lng: p.lng,
+                                                site_name: p.site_name,
+                                                created_at: p.created_at,
+                                                type: p.type,
+                                              })
+                                            }
+                                          >
+                                            <MapPin className="size-3.5" />
+                                          </Button>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+
+                              {/* Mobile Compact Card View (< 768px) */}
+                              <ul className="grid gap-2 p-3 md:hidden">
+                                {d.punches.map((p) => (
+                                  <li
+                                    key={p.id}
+                                    className="rounded-lg border border-line/60 bg-surface/60 p-2.5 text-xs space-y-1.5"
+                                  >
+                                    <div className="flex items-center justify-between">
+                                      <span className="flex items-center gap-1.5 font-semibold text-fg">
+                                        <span className={`size-2 rounded-full ${p.type === "check_in" ? "bg-ok" : "bg-bad"}`} />
+                                        {p.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
+                                        <span className="text-muted font-normal">· {p.site_name}</span>
+                                      </span>
+                                      <span className="font-mono text-faint">
+                                        {new Date(p.created_at).toLocaleTimeString(locale === "ar" ? "ar-EG" : "en-US")}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center justify-between pt-1 border-t border-line/40">
+                                      <span className="font-mono text-[11px] text-faint">
+                                        {Math.round(p.distance_meters)}m
+                                        {p.accuracy_meters != null ? ` · ±${Math.round(p.accuracy_meters)}m` : ""}
+                                      </span>
+                                      <div className="flex items-center gap-1.5">
+                                        <FlagChip reason={p.flag_reason} />
+                                        <Button
+                                          variant="ghost"
+                                          size="icon"
+                                          className="size-7"
+                                          onClick={() =>
+                                            setMapPunch({
+                                              lat: p.lat,
+                                              lng: p.lng,
+                                              site_name: p.site_name,
+                                              created_at: p.created_at,
+                                              type: p.type,
+                                            })
+                                          }
+                                        >
+                                          <MapPin className="size-3.5" />
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
                           ) : null}
                         </div>
                       );
@@ -1756,23 +1963,78 @@ function LeaveDesk({ locale }: { locale: Locale }) {
 function Log({ locale }: { locale: Locale }) {
   const q = useQuery({ queryKey: ["htn-log"], queryFn: () => activityLog({ data: {} }) });
   if (q.isLoading) return <Skeleton className="h-64" />;
+  const rows = q.data?.rows ?? [];
+
   return (
-    <div className="grid gap-3">
-      <h1 className="font-display text-2xl font-semibold">{t(locale, "log")}</h1>
-      <table className="w-full text-sm">
-        <tbody>
-          {(q.data?.rows ?? []).map((row) => (
-            <tr key={row.id} className="border-t border-line">
-              <td className="py-2 font-mono text-xs text-faint">
-                {new Date(row.created_at).toLocaleString()}
-              </td>
-              <td className="py-2">{row.full_name ?? row.user_id}</td>
-              <td className="py-2 font-mono text-xs">{row.kind}</td>
-              <td className="py-2 text-muted">{row.detail}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="grid gap-4">
+      <div className="flex items-center justify-between">
+        <h1 className="font-display text-2xl font-semibold">{t(locale, "log")}</h1>
+        <span className="font-mono text-xs text-muted">
+          {rows.length} {t(locale, "log").toLowerCase()}
+        </span>
+      </div>
+
+      {rows.length === 0 ? (
+        <Empty>{t(locale, "emptyTimeline")}</Empty>
+      ) : (
+        <Panel className="p-0 overflow-hidden">
+          {/* Desktop Table View (>= 768px) with Sticky Header */}
+          <div className="hidden md:block max-h-[75dvh] overflow-y-auto">
+            <table className="w-full text-start text-xs">
+              <thead className="sticky top-0 z-10 border-b border-line bg-surface/95 backdrop-blur">
+                <tr className="text-[11px] uppercase tracking-wider text-muted">
+                  <th className="py-3 ps-4 text-start font-semibold">{t(locale, "logTimestamp")}</th>
+                  <th className="py-3 text-start font-semibold">{t(locale, "logActor")}</th>
+                  <th className="py-3 text-start font-semibold">{t(locale, "logKind")}</th>
+                  <th className="py-3 pe-4 text-start font-semibold">{t(locale, "logDetail")}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line/40">
+                {rows.map((row) => (
+                  <tr key={row.id} className="hover:bg-elevated/40 transition-colors">
+                    <td className="py-2.5 ps-4 font-mono text-[11px] text-faint whitespace-nowrap">
+                      {new Date(row.created_at).toLocaleString(locale === "ar" ? "ar-EG" : "en-US")}
+                    </td>
+                    <td className="py-2.5 font-medium text-fg whitespace-nowrap">
+                      {row.full_name ?? row.user_id}
+                    </td>
+                    <td className="py-2.5 whitespace-nowrap">
+                      <StatusChip size="sm" variant="neutral">
+                        {row.kind}
+                      </StatusChip>
+                    </td>
+                    <td className="py-2.5 pe-4 text-muted break-words max-w-md">
+                      {row.detail}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile Card List (< 768px) */}
+          <ul className="grid gap-2 p-3 md:hidden divide-y divide-line/40">
+            {rows.map((row) => (
+              <li key={row.id} className="pt-2.5 first:pt-0 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-xs text-fg truncate">
+                    {row.full_name ?? row.user_id}
+                  </span>
+                  <StatusChip size="sm" variant="neutral">
+                    {row.kind}
+                  </StatusChip>
+                </div>
+                <p className="text-xs text-muted leading-relaxed break-words">
+                  {row.detail}
+                </p>
+                <p className="font-mono text-[10px] text-faint">
+                  {new Date(row.created_at).toLocaleString(locale === "ar" ? "ar-EG" : "en-US")}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      )}
     </div>
   );
 }

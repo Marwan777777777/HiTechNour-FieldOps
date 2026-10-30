@@ -62,11 +62,12 @@ export function Stat({
   );
 }
 
+import { StatusChip } from "@/components/ui/status-chip";
+export { StatusChip };
+
 export function FlagChip({ reason }: { reason: string | null }) {
   if (!reason) return null;
-  return (
-    <span className="rounded-full bg-warn/15 px-2 py-0.5 font-mono text-xs text-warn">{reason}</span>
-  );
+  return <StatusChip variant="warn">{reason}</StatusChip>;
 }
 
 export function StatusDot({ on }: { on: boolean }) {

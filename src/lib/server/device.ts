@@ -37,3 +37,29 @@ export function punchMessage(p: {
 }): string {
   return `${p.deviceId}|${p.clientEventId}|${p.type}|${p.lat}|${p.lng}|${p.siteId}`;
 }
+
+export function proofOk(payload: {
+  deviceId: string;
+  clientEventId: string;
+  type: string;
+  lat: number;
+  lng: number;
+  siteId: number;
+  devicePublicKey?: string;
+  deviceSignature?: string;
+}): boolean {
+  if (!payload.devicePublicKey || !payload.deviceSignature) return false;
+  if (publicKeyFingerprint(payload.devicePublicKey) !== payload.deviceId) return false;
+  return verifyDeviceSignature(
+    payload.devicePublicKey,
+    punchMessage({
+      deviceId: payload.deviceId,
+      clientEventId: payload.clientEventId,
+      type: payload.type,
+      lat: payload.lat,
+      lng: payload.lng,
+      siteId: payload.siteId,
+    }),
+    payload.deviceSignature,
+  );
+}
