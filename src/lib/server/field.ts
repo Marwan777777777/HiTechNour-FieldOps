@@ -1,16 +1,34 @@
 import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import { createServerFn } from "@tanstack/react-start";
-import { authMiddleware, sessionMiddleware } from "@/lib/auth/middleware";
-import { getSql } from "@/lib/db";
-import { cairoDate, PAYROLL_CAP_HOURS } from "@/lib/geo";
-import { FieldError, processCheckin } from "./checkin-engine";
-import { getDailyHours, getMonthlyAttendance } from "./attendance";
-import { notifyAndPush } from "./notify";
-import { loadTodayPunches } from "./today-punches";
-import type { AssignmentRow, Profile, Site, TimelineEvent } from "./types";
+import { authMiddleware, sessionMiddleware } from "../auth/middleware.ts";
+import { getSql, toSql, type Sql } from "../db.ts";
+import { cairoDate, PAYROLL_CAP_HOURS } from "../geo.ts";
+import { FieldError, processCheckin } from "./checkin-engine.ts";
+import { getDailyHours, getMonthlyAttendance } from "./attendance.ts";
+import { notifyAndPush } from "./notify.ts";
+import { loadTodayPunches } from "./today-punches.ts";
+import type { AssignmentRow, AttendanceRequestRow, Profile, Site, TimelineEvent } from "./types.ts";
 
-export type { Profile, Site, TimelineEvent, AssignmentRow };
+export type { Profile, Site, TimelineEvent, AssignmentRow, AttendanceRequestRow };
+
+import {
+  ensureSql,
+  executeLogRejectedPunch,
+  executeSubmitAttendanceRequest,
+  floatEquals,
+  type DbClient,
+  type SubmitAttendanceRequestData,
+} from "./attendance-request";
+
+export {
+  ensureSql,
+  executeLogRejectedPunch,
+  executeSubmitAttendanceRequest,
+  floatEquals,
+  type DbClient,
+  type SubmitAttendanceRequestData,
+};
 
 async function profileOf(userId: string) {
   const sql = await getSql();
@@ -72,7 +90,7 @@ async function loadHome(userId: string) {
   if (!me) throw new Error("NO_PROFILE");
   const today = cairoDate();
 
-  const [allSites, todayAssign, lastCheck, history, unread] = await Promise.all([
+  const [allSites, todayAssign, lastCheck, history, unread, pendingRequests, rejectedPunchBoundaries] = await Promise.all([
     sql<Site>`select s.id, s.name, s.address, s.lat, s.lng, s.radius_meters, s.active,
              s.group_id, g.name as group_name
       from sites s
@@ -80,22 +98,47 @@ async function loadHome(userId: string) {
       where s.active = true
       order by g.name nulls last, s.name`,
     sql<AssignmentRow>`
-      select a.id, a.site_id, s.name as site_name, a.task,
+      select a.id, a.site_id, s.name as site_name, a.task, a.notes,
+             coalesce(a.status, 'published') as status,
              a.start_date::text as start_date, a.end_date::text as end_date
       from assignments a join sites s on s.id = a.site_id
       where a.user_id = ${userId} and a.start_date <= ${today}::date and a.end_date >= ${today}::date
+        and coalesce(a.status, 'published') = 'published'
       order by a.start_date limit 20`,
-    sql<{ type: string; site_id: number }>`select type, site_id from checkins where user_id = ${userId}
-      order by created_at desc, id desc limit 1`,
+    sql<{ type: string; site_id: number }>`select type, site_id from checkins where user_id = ${userId} and is_reversed = false
+      order by actual_time desc, id desc limit 1`,
     sql<TimelineEvent>`
       select c.id, c.type, c.distance_meters, c.status, c.flagged, c.flag_reason,
-             c.created_at::text as created_at, s.name as site_name, c.site_id
+             c.created_at::text as created_at, c.actual_time::text as actual_time, s.name as site_name, c.site_id,
+             c.source, c.is_manual, c.reason
       from checkins c join sites s on s.id = c.site_id
       where c.user_id = ${userId}
-        and (c.created_at at time zone 'Africa/Cairo')::date = ${today}::date
-      order by c.created_at desc limit 30`,
+        and c.is_reversed = false
+        and (c.actual_time at time zone 'Africa/Cairo')::date = ${today}::date
+      order by c.actual_time desc limit 30`,
     sql<{ c: number }>`select count(*)::int as c from notifications
       where user_id = ${userId} and read = false`,
+    sql<AttendanceRequestRow>`
+      select r.id, r.user_id, r.site_id, s.name as site_name, r.type,
+             r.attempted_at::text as attempted_at, r.gps_fix_at::text as gps_fix_at,
+             r.lat, r.lng, r.accuracy_meters, r.distance_meters, r.advisory_state,
+             r.reason, r.device_id, r.status, r.request_kind, r.created_at::text as created_at
+      from attendance_requests r
+      join sites s on s.id = r.site_id
+      where r.user_id = ${userId}
+        and r.status = 'pending'
+        and r.request_kind = 'review_request'
+        and (r.attempted_at at time zone 'Africa/Cairo')::date = ${today}::date
+      order by r.attempted_at desc limit 5`,
+    sql<{ type: string; actual_time: string }>`
+      select r.type, r.attempted_at::text as actual_time
+      from attendance_requests r
+      where r.user_id = ${userId}
+        and r.request_kind = 'rejected_punch'
+        and r.status = 'rejected'
+        and r.type = 'check_out'
+        and (r.attempted_at at time zone 'Africa/Cairo')::date = ${today}::date
+      order by r.attempted_at asc`,
   ]);
 
   // Assigned-for-today workers only ever see their assigned site(s) as a
@@ -118,9 +161,25 @@ async function loadHome(userId: string) {
 
   let todayHours = 0;
   let openSince: Date | null = null;
-  const chronological = [...history].reverse();
-  for (const ev of chronological) {
-    const at = new Date(ev.created_at);
+  const reqBoundaries = (rejectedPunchBoundaries || []).map((r) => ({
+    actual_time: r.actual_time,
+    type: r.type,
+    is_boundary: true,
+  }));
+  const allEvents = [
+    ...history.map((h) => ({ actual_time: h.actual_time ?? h.created_at, type: h.type, is_boundary: false })),
+    ...reqBoundaries,
+  ].sort((a, b) => new Date(a.actual_time).getTime() - new Date(b.actual_time).getTime());
+
+  for (const ev of allEvents) {
+    const at = new Date(ev.actual_time);
+    if (ev.is_boundary) {
+      if (ev.type === "check_out" && openSince) {
+        todayHours += Math.min(PAYROLL_CAP_HOURS, (at.getTime() - openSince.getTime()) / 3_600_000);
+        openSince = null;
+      }
+      continue;
+    }
     if (ev.type === "check_in") openSince = at;
     else if (ev.type === "check_out" && openSince) {
       todayHours += Math.min(PAYROLL_CAP_HOURS, (at.getTime() - openSince.getTime()) / 3_600_000);
@@ -138,6 +197,7 @@ async function loadHome(userId: string) {
     isCheckedIn: lastCheck[0]?.type === "check_in",
     openSiteId: lastCheck[0]?.type === "check_in" ? lastCheck[0].site_id : null,
     timeline: history,
+    pendingRequests,
     unread: unread[0]?.c ?? 0,
     today,
     todayHours: Math.round(todayHours * 10) / 10,
@@ -166,6 +226,7 @@ export const checkInOut = createServerFn({ method: "POST" })
       webauthnId?: string;
       type: "check_in" | "check_out";
       clientEventId: string;
+      gpsFixAt?: string | null;
     }) => d,
   )
   .middleware([authMiddleware])
@@ -173,8 +234,43 @@ export const checkInOut = createServerFn({ method: "POST" })
     try {
       return await processCheckin(context.userId, data);
     } catch (err) {
+      if (err instanceof FieldError && err.code === "OUTSIDE_RADIUS") {
+        try {
+          const sql = await getSql();
+          await executeLogRejectedPunch(sql, context.userId, data);
+        } catch (logErr) {
+          if (logErr instanceof FieldError && logErr.code === "EVENT_ID_CONFLICT") {
+            throw logErr;
+          }
+          // ignore non-critical logging failure
+        }
+      }
       fail(err);
     }
+  });
+
+export const submitAttendanceRequest = createServerFn({ method: "POST" })
+  .validator(
+    (d: {
+      siteId: number;
+      type: "check_in" | "check_out";
+      lat?: number | null;
+      lng?: number | null;
+      accuracy?: number | null;
+      distanceMeters?: number | null;
+      advisoryState: string;
+      reason: string;
+      deviceId: string;
+      deviceSignature?: string;
+      devicePublicKey?: string;
+      clientEventId: string;
+      gpsFixAt?: string | null;
+    }) => d,
+  )
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    return executeSubmitAttendanceRequest(sql, context.userId, data);
   });
 
 export const loadHistory = createServerFn({ method: "GET" })
@@ -187,10 +283,11 @@ export const loadHistory = createServerFn({ method: "GET" })
     const [rows, count, monthly, hours] = await Promise.all([
       sql<TimelineEvent>`
         select c.id, c.type, c.distance_meters, c.status, c.flagged, c.flag_reason,
-               c.created_at::text as created_at, s.name as site_name, c.site_id
+               c.created_at::text as created_at, c.actual_time::text as actual_time, s.name as site_name, c.site_id,
+               c.source, c.is_manual, c.is_reversed, c.reason
         from checkins c join sites s on s.id = c.site_id
         where c.user_id = ${context.userId}
-        order by c.created_at desc
+        order by c.actual_time desc
         limit ${pageSize} offset ${page * pageSize}`,
       sql<{ c: number }>`select count(*)::int as c from checkins where user_id = ${context.userId}`,
       getMonthlyAttendance(sql, context.userId, data.month),
@@ -205,21 +302,25 @@ export const loadAssignments = createServerFn({ method: "GET" })
     const sql = await getSql();
     const today = cairoDate();
     const rows = await sql<AssignmentRow>`
-      select a.id, a.site_id, s.name as site_name, a.task,
+      select a.id, a.site_id, s.name as site_name, a.task, a.notes,
+             coalesce(a.status, 'published') as status,
              a.start_date::text as start_date, a.end_date::text as end_date
       from assignments a join sites s on s.id = a.site_id
       where a.user_id = ${context.userId} and a.end_date >= ${today}::date
+        and coalesce(a.status, 'published') = 'published'
       order by a.start_date`;
-    const teammates = await sql<{ full_name: string; site_name: string }>`
-      select distinct p.full_name, s.name as site_name
+    const teammates = await sql<{ full_name: string; site_name: string; title: string | null; phone: string | null; task: string | null }>`
+      select distinct p.full_name, s.name as site_name, p.title, p.phone, a.task
       from assignments a
       join assignments mine
         on mine.site_id = a.site_id
        and mine.user_id = ${context.userId}
        and a.start_date <= mine.end_date and a.end_date >= mine.start_date
+       and coalesce(mine.status, 'published') = 'published'
       join profiles p on p.user_id = a.user_id
       join sites s on s.id = a.site_id
       where a.user_id <> ${context.userId}
+        and coalesce(a.status, 'published') = 'published'
         and mine.start_date <= ${today}::date and mine.end_date >= ${today}::date
       order by p.full_name`;
     return { rows, today, teammates };

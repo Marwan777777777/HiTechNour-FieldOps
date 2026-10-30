@@ -68,10 +68,10 @@ const OID_DATE = 1082;
 const OID_INTERVAL = 1186;
 const identity = (v: string) => v;
 
-type Run = <T>(text: string, params: unknown[]) => Promise<T[]>;
+export type Run = <T>(text: string, params: unknown[]) => Promise<T[]>;
 
 /** Wrap a query runner in the tagged-template + `.query()` `Sql` surface. */
-function toSql(run: Run): Sql {
+export function toSql(run: Run): Sql {
   const sql = (async <T = Record<string, unknown>>(
     strings: TemplateStringsArray,
     ...values: unknown[]
@@ -139,7 +139,10 @@ async function createPgliteSql(): Promise<Sql> {
   // passes serialized on a global chain so concurrent callers never
   // double-apply.
   const migrate = async (): Promise<void> => {
-    const migrations = import.meta.glob("/migrations/*.sql", {
+    if (typeof (import.meta as any).glob !== "function") {
+      return;
+    }
+    const migrations = (import.meta as any).glob("/migrations/*.sql", {
       query: "?raw",
       import: "default",
       eager: true,

@@ -1,10 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
-import { getSql } from "@/lib/db";
+import { getSql, withTransaction, type Sql } from "@/lib/db";
 import { getDailyHours, getMonthlyAttendance, overviewRoster } from "./attendance";
 import { requireAdmin } from "./admin-guard";
 import { notifyAndPush } from "./notify";
-import { PAYROLL_CAP_HOURS, parseGoogleMapsUrl } from "@/lib/geo";
+import { PAYROLL_CAP_HOURS, parseGoogleMapsUrl, STALE_SHIFT_HOURS } from "@/lib/geo";
 import { loadTodayPunches } from "./today-punches";
 import type { Profile, Site } from "./types";
 
@@ -16,7 +17,7 @@ export const adminOverview = createServerFn({ method: "GET" })
     const roster = await overviewRoster(sql);
 
     const today = roster.today;
-    const [onSite, todayPunchesRaw, flagged, pending, openReports, pendingLeave] = await Promise.all([
+    const [onSite, todayPunchesRaw, flagged, pending, openReports, pendingLeave, pendingRequests, rejectedPunches, pendingDevices] = await Promise.all([
       sql<{
         user_id: string;
         full_name: string;
@@ -26,20 +27,20 @@ export const adminOverview = createServerFn({ method: "GET" })
         stale: boolean;
         distance_meters: number;
       }>`
-        select p.user_id, p.full_name, s.name as site_name, c.created_at::text as created_at,
-               (extract(epoch from (now() - c.created_at)) / 3600.0)::float as hours_open,
-               (extract(epoch from (now() - c.created_at)) / 3600.0 >= 12) as stale,
+        select p.user_id, p.full_name, s.name as site_name, c.actual_time::text as created_at,
+               (extract(epoch from (now() - c.actual_time)) / 3600.0)::float as hours_open,
+               (extract(epoch from (now() - c.actual_time)) / 3600.0 >= 12) as stale,
                c.distance_meters
         from profiles p
         join lateral (
-          select type, site_id, created_at, distance_meters from checkins
-          where user_id = p.user_id
-          order by created_at desc, id desc
+          select type, site_id, actual_time, distance_meters from checkins
+          where user_id = p.user_id and is_reversed = false
+          order by actual_time desc, id desc
           limit 1
         ) c on true
         join sites s on s.id = c.site_id
         where c.type = 'check_in'
-        order by c.created_at desc`,
+        order by c.actual_time desc`,
       loadTodayPunches(sql, today),
       sql<{ c: number }>`
         select count(*)::int as c from checkins
@@ -49,6 +50,9 @@ export const adminOverview = createServerFn({ method: "GET" })
         where role = 'employee' and active = false`,
       sql<{ c: number }>`select count(*)::int as c from reports where status = 'submitted'`,
       sql<{ c: number }>`select count(*)::int as c from leave_requests where status = 'pending'`,
+      sql<{ c: number }>`select count(*)::int as c from attendance_requests where status = 'pending' and coalesce(request_kind, 'review_request') = 'review_request'`,
+      sql<{ c: number }>`select count(*)::int as c from attendance_requests where status = 'pending' and coalesce(request_kind, 'review_request') = 'rejected_punch'`,
+      sql<{ c: number }>`select count(*)::int as c from profiles where role = 'employee' and (pending_device_id is not null or device_approved = false or active = false)`,
     ]);
 
     // "On site now" and "Today's punches" used to be two separate panels
@@ -68,11 +72,18 @@ export const adminOverview = createServerFn({ method: "GET" })
       };
     });
 
+    const staleShifts = onSite.filter((o) => o.stale);
+
     return {
       ...roster,
       todayPunches,
       flagged: flagged[0]?.c ?? 0,
       pending: pending[0]?.c ?? 0,
+      pendingRequests: pendingRequests[0]?.c ?? 0,
+      rejectedPunchesCount: rejectedPunches[0]?.c ?? 0,
+      pendingDevices: pendingDevices[0]?.c ?? 0,
+      staleShiftsCount: staleShifts.length,
+      staleShiftsList: staleShifts,
       openReports: openReports[0]?.c ?? 0,
       pendingLeave: pendingLeave[0]?.c ?? 0,
     };
@@ -239,6 +250,7 @@ export const workerAttendanceHistory = createServerFn({ method: "GET" })
       id: number;
       type: string;
       created_at: string;
+      actual_time?: string;
       site_name: string;
       distance_meters: number;
       accuracy_meters: number | null;
@@ -248,16 +260,44 @@ export const workerAttendanceHistory = createServerFn({ method: "GET" })
       is_mock_location: boolean;
       lat: number;
       lng: number;
+      source: string;
+      is_manual: boolean;
+      reason: string | null;
+      is_reversed: boolean;
+      reversal_reason: string | null;
+      created_by: string | null;
     }>`
-      select c.id, c.type, c.created_at::text as created_at, s.name as site_name,
+      select c.id, c.type, c.created_at::text as created_at, c.actual_time::text as actual_time, s.name as site_name,
              c.distance_meters, c.accuracy_meters, c.status, c.flagged, c.flag_reason,
-             c.is_mock_location, c.lat, c.lng
+             c.is_mock_location, c.lat, c.lng, c.source, c.is_manual, c.reason,
+             c.is_reversed, c.reversal_reason, c.created_by
       from checkins c
       join sites s on s.id = c.site_id
       where c.user_id = ${data.userId}
-        and c.created_at >= ${data.from}::date
-        and c.created_at < (${data.to}::date + interval '1 day')
-      order by c.created_at asc`;
+        and c.actual_time >= ${data.from}::date
+        and c.actual_time < (${data.to}::date + interval '1 day')
+      order by c.actual_time asc`;
+
+    const requests = await sql<{
+      id: number;
+      site_name: string;
+      type: string;
+      attempted_at: string;
+      status: string;
+      request_kind: string;
+      reason: string;
+      advisory_state: string;
+      admin_notes: string | null;
+      created_at: string;
+    }>`
+      select r.id, s.name as site_name, r.type, r.attempted_at::text as attempted_at,
+             r.status, r.request_kind, r.reason, r.advisory_state, r.admin_notes, r.created_at::text as created_at
+      from attendance_requests r
+      join sites s on s.id = r.site_id
+      where r.user_id = ${data.userId}
+        and r.attempted_at >= ${data.from}::date
+        and r.attempted_at < (${data.to}::date + interval '1 day')
+      order by r.attempted_at asc`;
 
     // Group into Cairo calendar days and pair sequential check_in/check_out
     // to compute hours worked per day - same pairing logic as
@@ -268,7 +308,8 @@ export const workerAttendanceHistory = createServerFn({ method: "GET" })
     type Punch = (typeof punches)[number];
     const byDay = new Map<string, Punch[]>();
     for (const p of punches) {
-      const day = dayFmt.format(new Date(p.created_at));
+      const timeStr = p.actual_time ?? p.created_at;
+      const day = dayFmt.format(new Date(timeStr));
       const list = byDay.get(day) ?? [];
       list.push(p);
       byDay.set(day, list);
@@ -278,22 +319,57 @@ export const workerAttendanceHistory = createServerFn({ method: "GET" })
       .map(([day, list]) => {
         let openSince: Date | null = null;
         let hours = 0;
-        for (const p of list) {
-          const at = new Date(p.created_at);
-          if (p.type === "check_in") openSince = at;
+        // Non-payable boundary events: only actual rejected GPS checkout attempts cap the shift
+        const dayBoundaries = (requests || [])
+          .filter(
+            (r) =>
+              r.request_kind === "rejected_punch" &&
+              r.status === "rejected" &&
+              r.type === "check_out" &&
+              dayFmt.format(new Date(r.attempted_at)) === day,
+          )
+          .map((r) => ({
+            at: new Date(r.attempted_at),
+            type: r.type,
+            is_reversed: false,
+            is_boundary: true,
+          }));
+
+        const combined = [
+          ...list.map((p) => ({
+            at: new Date(p.actual_time ?? p.created_at),
+            type: p.type,
+            is_reversed: p.is_reversed,
+            is_boundary: false,
+          })),
+          ...dayBoundaries,
+        ].sort((a, b) => a.at.getTime() - b.at.getTime());
+
+        for (const p of combined) {
+          if (p.is_reversed) continue; // reversed entries do not count toward hours
+          if (p.is_boundary) {
+            // Non-payable boundary event for check_out caps/closes the open shift at boundary time
+            if (p.type === "check_out" && openSince) {
+              hours += Math.min(PAYROLL_CAP_HOURS, (p.at.getTime() - openSince.getTime()) / 3_600_000);
+              openSince = null;
+            }
+            continue;
+          }
+          if (p.type === "check_in") openSince = p.at;
           else if (p.type === "check_out" && openSince) {
-            hours += Math.min(PAYROLL_CAP_HOURS, (at.getTime() - openSince.getTime()) / 3_600_000);
+            hours += Math.min(PAYROLL_CAP_HOURS, (p.at.getTime() - openSince.getTime()) / 3_600_000);
             openSince = null;
           }
         }
         const siteNames = [...new Set(list.map((p) => p.site_name))];
+        const activeList = list.filter((p) => !p.is_reversed);
         return {
           day,
           punches: list,
           hours: Math.round(hours * 10) / 10,
           openShift: openSince != null,
           siteNames,
-          flaggedCount: list.filter((p) => p.flagged).length,
+          flaggedCount: activeList.filter((p) => p.flagged).length,
         };
       })
       .sort((a, b) => (a.day < b.day ? 1 : -1)); // newest day first
@@ -302,7 +378,7 @@ export const workerAttendanceHistory = createServerFn({ method: "GET" })
     const flaggedCount = days.reduce((s, d) => s + d.flaggedCount, 0);
     const openShiftDays = days.filter((d) => d.openShift).length;
 
-    return { days, summary: { daysPresent: days.length, totalHours, flaggedCount, openShiftDays } };
+    return { days, requests, summary: { daysPresent: days.length, totalHours, flaggedCount, openShiftDays } };
   });
 
 export const workerAttendanceCsv = createServerFn({ method: "GET" })
@@ -312,36 +388,40 @@ export const workerAttendanceCsv = createServerFn({ method: "GET" })
     await requireAdmin(context.userId);
     const sql = await getSql();
     const rows = await sql<{
-      created_at: string;
+      actual_time: string;
       full_name: string;
       site_name: string;
       type: string;
       status: string;
+      source: string;
+      is_manual: boolean;
       distance_meters: number;
       accuracy_meters: number | null;
       flagged: boolean;
       flag_reason: string | null;
     }>`
-      select c.created_at::text as created_at, p.full_name, s.name as site_name,
-             c.type, c.status, c.distance_meters, c.accuracy_meters, c.flagged, c.flag_reason
+      select c.actual_time::text as actual_time, p.full_name, s.name as site_name,
+             c.type, c.status, c.source, c.is_manual, c.distance_meters, c.accuracy_meters,
+             c.flagged, c.flag_reason
       from checkins c
       join profiles p on p.user_id = c.user_id
       join sites s on s.id = c.site_id
       where c.user_id = ${data.userId}
-        and c.created_at >= ${data.from}::date
-        and c.created_at < (${data.to}::date + interval '1 day')
-      order by c.created_at`;
-    const header = "time,worker,site,type,status,distance_m,accuracy_m,flagged,reason";
+        and c.actual_time >= ${data.from}::date
+        and c.actual_time < (${data.to}::date + interval '1 day')
+      order by c.actual_time asc`;
+    const header = "time,worker,site,type,geofence_status,source,distance_m,accuracy_m,flagged,reason";
     const worker = rows[0]?.full_name ?? data.userId;
     const lines = rows.map((r) =>
       [
-        r.created_at,
+        r.actual_time,
         csvEscape(r.full_name),
         csvEscape(r.site_name),
         r.type,
-        r.status,
-        Math.round(r.distance_meters),
-        r.accuracy_meters != null ? Math.round(r.accuracy_meters) : "",
+        r.is_manual ? "manual_unverified" : r.status,
+        r.source,
+        r.is_manual ? "" : Math.round(r.distance_meters),
+        r.is_manual ? "" : (r.accuracy_meters != null ? Math.round(r.accuracy_meters) : ""),
         r.flagged ? "yes" : "no",
         r.flag_reason ?? "",
       ].join(","),
@@ -764,15 +844,19 @@ export const exportAttendanceCsv = createServerFn({ method: "GET" })
       distance_meters: number;
       flagged: boolean;
       flag_reason: string | null;
+      source: string;
+      is_reversed: boolean;
+      reason: string | null;
     }>`
-      select c.id, c.created_at::text as created_at, p.full_name, p.email, s.name as site_name,
-             c.type, c.status, c.distance_meters, c.flagged, c.flag_reason
+      select c.id, c.actual_time::text as created_at, p.full_name, p.email, s.name as site_name,
+             c.type, c.status, c.distance_meters, c.flagged, c.flag_reason,
+             c.source, c.is_reversed, c.reason
       from checkins c
       join profiles p on p.user_id = c.user_id
       join sites s on s.id = c.site_id
-      where c.created_at >= ${data.from}::date and c.created_at < (${data.to}::date + interval '1 day')
-      order by c.created_at`;
-    const header = "id,time,worker,email,site,type,status,distance_m,flagged,reason";
+      where c.actual_time >= ${data.from}::date and c.actual_time < (${data.to}::date + interval '1 day')
+      order by c.actual_time`;
+    const header = "id,time,worker,email,site,type,geofence_status,source,distance_m,flagged,reversed,reason";
     const lines = rows.map((r) =>
       [
         r.id,
@@ -781,10 +865,12 @@ export const exportAttendanceCsv = createServerFn({ method: "GET" })
         csvEscape(r.email ?? ""),
         csvEscape(r.site_name),
         r.type,
-        r.status,
-        Math.round(r.distance_meters),
+        r.source === "manual" ? "manual_unverified" : r.status,
+        r.source === "manual" ? "manual" : "gps",
+        r.source === "manual" ? "" : Math.round(r.distance_meters),
         r.flagged ? "yes" : "no",
-        r.flag_reason ?? "",
+        r.is_reversed ? "yes" : "no",
+        csvEscape(r.reason ?? r.flag_reason ?? ""),
       ].join(","),
     );
     return { csv: [header, ...lines].join("\n"), filename: `attendance-${data.from}-to-${data.to}.csv` };
@@ -803,12 +889,30 @@ export const exportPayrollCsv = createServerFn({ method: "GET" })
       type: string;
       created_at: string;
       flagged: boolean;
+      is_boundary: boolean;
     }>`
-      select c.user_id, p.full_name, p.email, c.type, c.created_at::text as created_at, c.flagged
-      from checkins c
-      join profiles p on p.user_id = c.user_id
-      where c.created_at >= ${data.from}::date and c.created_at < (${data.to}::date + interval '1 day')
-      order by p.full_name, c.created_at`;
+      with events as (
+        select c.user_id, p.full_name, p.email, c.type, c.actual_time as event_time, c.flagged,
+               false as is_boundary
+        from checkins c
+        join profiles p on p.user_id = c.user_id
+        where c.is_reversed = false
+          and c.actual_time >= ${data.from}::date
+          and c.actual_time < (${data.to}::date + interval '1 day')
+        union all
+        select r.user_id, p.full_name, p.email, r.type, r.attempted_at as event_time, false as flagged,
+               true as is_boundary
+        from attendance_requests r
+        join profiles p on p.user_id = r.user_id
+        where r.request_kind = 'rejected_punch'
+          and r.status = 'rejected'
+          and r.type = 'check_out'
+          and r.attempted_at >= ${data.from}::date
+          and r.attempted_at < (${data.to}::date + interval '1 day')
+      )
+      select user_id, full_name, email, type, event_time::text as created_at, flagged, is_boundary
+      from events
+      order by full_name, event_time asc`;
     const leaves = await sql<{
       user_id: string;
       full_name: string;
@@ -858,6 +962,26 @@ export const exportPayrollCsv = createServerFn({ method: "GET" })
           open: false,
         };
         byKey.set(key, row);
+      }
+      if (p.is_boundary) {
+        // Non-payable boundary event for check_out caps and closes any open shift at boundary time
+        if (p.type === "check_out") {
+          const opened = openSince.get(p.user_id);
+          if (opened) {
+            const hrs = Math.min(
+              PAYROLL_CAP_HOURS,
+              (new Date(p.created_at).getTime() - new Date(opened.at).getTime()) / 3_600_000,
+            );
+            const target = byKey.get(opened.key);
+            if (target) {
+              target.hours = Math.round((target.hours + hrs) * 10) / 10;
+              target.lastOut = p.created_at;
+              target.open = false;
+            }
+            openSince.delete(p.user_id);
+          }
+        }
+        continue;
       }
       if (p.flagged) row.flagged += 1;
       if (p.type === "check_in") {
@@ -1033,4 +1157,433 @@ export const saveSiteGroup = createServerFn({ method: "POST" })
     const rows = await sql<{ id: number }>`
       insert into site_groups (name) values (${name}) returning id`;
     return { id: rows[0]!.id };
+  });
+
+export async function executeCreateManualAttendance(
+  sqlOrTx: Sql | Parameters<Parameters<typeof withTransaction>[0]>[0],
+  adminUserId: string,
+  data: {
+    userId: string;
+    siteId: number;
+    type: "check_in" | "check_out";
+    actualTime: string;
+    reason: string;
+    clientEventId?: string;
+  },
+) {
+  const reason = (data.reason ?? "").trim();
+  if (reason.length < 5) {
+    throw new Error("A specific operational reason (at least 5 characters) is required.");
+  }
+  const at = new Date(data.actualTime);
+  const atMs = at.getTime();
+  if (Number.isNaN(atMs)) {
+    throw new Error("Invalid actual attendance timestamp.");
+  }
+  // Reject future attendance timestamps (allow 2 min clock drift tolerance)
+  if (atMs > Date.now() + 2 * 60 * 1000) {
+    throw new Error("FUTURE_TIME: Actual attendance time cannot be in the future.");
+  }
+
+  const run = async (tx: Parameters<Parameters<typeof withTransaction>[0]>[0]) => {
+    // 1. Validate employee and take exclusive lock on worker profile to serialize concurrent manual/GPS punches
+    const workerRows = await tx<{ user_id: string; full_name: string; active: boolean }>`
+      select user_id, full_name, active from profiles where user_id = ${data.userId} for update`;
+    const worker = workerRows[0];
+    if (!worker) throw new Error("EMPLOYEE_NOT_FOUND");
+    if (!worker.active) throw new Error("EMPLOYEE_INACTIVE: Cannot record attendance for inactive employee.");
+
+    // Server-side idempotency if clientEventId is provided
+    if (data.clientEventId) {
+      const existing = await tx<{ id: number; type: string; actual_time: string }>`
+        select id, type, actual_time::text as actual_time
+        from checkins
+        where user_id = ${data.userId} and client_event_id = ${data.clientEventId}
+        limit 1`;
+      if (existing[0]) {
+        return { id: existing[0].id, type: existing[0].type, actual_time: existing[0].actual_time, replayed: true };
+      }
+    }
+
+    // 2. Validate site
+    const siteRows = await tx<{ id: number; name: string; lat: number; lng: number; active: boolean }>`
+      select id, name, lat, lng, active from sites where id = ${data.siteId}`;
+    const site = siteRows[0];
+    if (!site) throw new Error("SITE_NOT_FOUND");
+    if (!site.active) throw new Error("SITE_INACTIVE: Cannot record attendance for inactive site.");
+
+    // 3. Prevent duplicate active timestamps within 60 seconds
+    const dup = await tx<{ id: number }>`
+      select id from checkins
+      where user_id = ${data.userId}
+        and is_reversed = false
+        and abs(extract(epoch from (actual_time - ${at.toISOString()}::timestamptz))) < 60
+      limit 1`;
+    if (dup[0]) {
+      throw new Error("DUPLICATE_PUNCH: An active attendance punch already exists within 1 minute of this time.");
+    }
+
+    // 4. Validate sequence around the historical timestamp
+    const prevRows = await tx<{ id: number; type: string; actual_time: string }>`
+      select id, type, actual_time::text as actual_time from checkins
+      where user_id = ${data.userId}
+        and is_reversed = false
+        and actual_time <= ${at.toISOString()}::timestamptz
+      order by actual_time desc, id desc
+      limit 1`;
+    const prev = prevRows[0];
+
+    const nextRows = await tx<{ id: number; type: string; actual_time: string }>`
+      select id, type, actual_time::text as actual_time from checkins
+      where user_id = ${data.userId}
+        and is_reversed = false
+        and actual_time >= ${at.toISOString()}::timestamptz
+      order by actual_time asc, id asc
+      limit 1`;
+    const next = nextRows[0];
+
+    if (data.type === "check_in") {
+      if (prev && prev.type === "check_in") {
+        const hoursSincePrev = (atMs - new Date(prev.actual_time).getTime()) / 3_600_000;
+        if (hoursSincePrev < STALE_SHIFT_HOURS) {
+          throw new Error("ALREADY_CHECKED_IN: Worker has an unclosed check-in prior to this time.");
+        }
+      }
+      if (next && next.type === "check_in") {
+        const hoursUntilNext = (new Date(next.actual_time).getTime() - atMs) / 3_600_000;
+        if (hoursUntilNext < STALE_SHIFT_HOURS) {
+          throw new Error("INVALID_SEQUENCE: Cannot place check-in immediately before another check-in without an intervening checkout.");
+        }
+      }
+    } else {
+      // check_out
+      if (!prev || prev.type !== "check_in") {
+        throw new Error("NOT_CHECKED_IN: Cannot place check-out without a preceding open check-in.");
+      }
+      const hoursSincePrev = (atMs - new Date(prev.actual_time).getTime()) / 3_600_000;
+      if (hoursSincePrev >= STALE_SHIFT_HOURS) {
+        throw new Error("STALE_SHIFT: Preceding check-in is more than 16 hours old.");
+      }
+      if (next && next.type === "check_out") {
+        const hoursUntilNext = (new Date(next.actual_time).getTime() - atMs) / 3_600_000;
+        if (hoursUntilNext < STALE_SHIFT_HOURS) {
+          throw new Error("INVALID_SEQUENCE: Cannot place check-out immediately before another checkout.");
+        }
+      }
+    }
+
+    // 5. Insert manual checkin record
+    const clientEventId = data.clientEventId ?? randomUUID();
+    const inserted = await tx<{ id: number; type: string; actual_time: string }>`
+      insert into checkins (
+        user_id, site_id, type, client_event_id, lat, lng, distance_meters, status,
+        device_id, device_matched, flagged, source, is_manual, actual_time, created_by, reason, created_at
+      ) values (
+        ${data.userId}, ${data.siteId}, ${data.type}, ${clientEventId},
+        ${site.lat}, ${site.lng}, 0, 'inside',
+        'manual', true, false, 'manual', true, ${at.toISOString()},
+        ${adminUserId}, ${reason}, now()
+      )
+      returning id, type, actual_time::text as actual_time`;
+
+    const checkin = inserted[0]!;
+
+    // 6. Append-only audit record
+    await tx`
+      insert into manual_attendance_audit (
+        checkin_id, admin_id, action, reason, target_user_id, actual_time, details
+      ) values (
+        ${checkin.id}, ${adminUserId}, 'create', ${reason}, ${data.userId},
+        ${at.toISOString()},
+        ${JSON.stringify({ type: data.type, siteId: data.siteId, siteName: site.name, adminId: adminUserId })}
+      )`;
+
+    // 7. Activity log
+    await tx`
+      insert into activity_logs (user_id, kind, detail)
+      values (
+        ${adminUserId},
+        'manual_attendance',
+        ${`Created manual ${data.type} for ${worker.full_name} at ${site.name} (${at.toISOString()}): ${reason}`}
+      )`;
+
+    return { id: checkin.id, type: checkin.type, actual_time: checkin.actual_time };
+  };
+
+  if ("unsafe" in sqlOrTx || "begin" in sqlOrTx) {
+    return withTransaction(run);
+  }
+  return run(sqlOrTx as any);
+}
+
+export const createManualAttendance = createServerFn({ method: "POST" })
+  .validator(
+    (d: {
+      userId: string;
+      siteId: number;
+      type: "check_in" | "check_out";
+      actualTime: string;
+      reason: string;
+      clientEventId?: string;
+    }) => d,
+  )
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    await requireAdmin(context.userId);
+    const sql = await getSql();
+    return executeCreateManualAttendance(sql, context.userId, data);
+  });
+
+export async function executeReverseManualAttendance(
+  sqlOrTx: Sql | Parameters<Parameters<typeof withTransaction>[0]>[0],
+  adminUserId: string,
+  data: { checkinId: number; reason: string },
+) {
+  const reason = (data.reason ?? "").trim();
+  if (reason.length < 5) {
+    throw new Error("A specific reason for reversal (at least 5 characters) is required.");
+  }
+
+  const run = async (tx: Parameters<Parameters<typeof withTransaction>[0]>[0]) => {
+    const rows = await tx<{
+      id: number;
+      user_id: string;
+      site_id: number;
+      type: string;
+      actual_time: string;
+      is_reversed: boolean;
+      source: string;
+    }>`
+      select id, user_id, site_id, type, actual_time::text as actual_time, is_reversed, source
+      from checkins where id = ${data.checkinId} for update`;
+    const punch = rows[0];
+    if (!punch) throw new Error("PUNCH_NOT_FOUND");
+    if (punch.is_reversed) throw new Error("ALREADY_REVERSED: This attendance record has already been reversed.");
+
+    // Lock profile to serialize with concurrent operations
+    await tx`select user_id from profiles where user_id = ${punch.user_id} for update`;
+
+    await tx`
+      update checkins
+      set is_reversed = true,
+          reversal_reason = ${reason},
+          reversed_by = ${adminUserId},
+          reversed_at = now()
+      where id = ${data.checkinId}`;
+
+    await tx`
+      insert into manual_attendance_audit (
+        checkin_id, admin_id, action, reason, target_user_id, actual_time, details
+      ) values (
+        ${punch.id}, ${adminUserId}, 'reverse', ${reason}, ${punch.user_id},
+        ${punch.actual_time},
+        ${JSON.stringify({ reversedId: punch.id, type: punch.type, source: punch.source, adminId: adminUserId })}
+      )`;
+
+    await tx`
+      insert into activity_logs (user_id, kind, detail)
+      values (
+        ${adminUserId},
+        'manual_attendance_reverse',
+        ${`Reversed attendance #${punch.id} (${punch.type} at ${punch.actual_time}): ${reason}`}
+      )`;
+
+    return { success: true, id: punch.id };
+  };
+
+  if ("unsafe" in sqlOrTx || "begin" in sqlOrTx) {
+    return withTransaction(run);
+  }
+  return run(sqlOrTx as any);
+}
+
+export const reverseManualAttendance = createServerFn({ method: "POST" })
+  .validator((d: { checkinId: number; reason: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    await requireAdmin(context.userId);
+    const sql = await getSql();
+    return executeReverseManualAttendance(sql, context.userId, data);
+  });
+
+export const listAttendanceRequests = createServerFn({ method: "GET" })
+  .validator((d: { status?: "pending" | "approved" | "rejected"; requestKind?: "review_request" | "rejected_punch" | "all" }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    await requireAdmin(context.userId);
+    const sql = await getSql();
+    const status = data.status ?? "pending";
+    const requestKind = data.requestKind ?? "review_request";
+    const rows = await sql<{
+      id: number;
+      user_id: string;
+      full_name: string;
+      phone: string | null;
+      email: string | null;
+      site_id: number;
+      site_name: string;
+      type: string;
+      request_kind: string;
+      attempted_at: string;
+      gps_fix_at: string | null;
+      lat: number | null;
+      lng: number | null;
+      accuracy_meters: number | null;
+      distance_meters: number | null;
+      advisory_state: string;
+      reason: string;
+      status: string;
+      reviewed_by: string | null;
+      reviewed_at: string | null;
+      admin_notes: string | null;
+      created_at: string;
+    }>`
+      select r.id, r.user_id, p.full_name, p.phone, p.email, r.site_id, s.name as site_name,
+             r.type, coalesce(r.request_kind, 'review_request') as request_kind,
+             r.attempted_at::text as attempted_at, r.gps_fix_at::text as gps_fix_at,
+             r.lat, r.lng, r.accuracy_meters, r.distance_meters, r.advisory_state,
+             r.reason, r.status, r.reviewed_by, r.reviewed_at::text as reviewed_at,
+             r.admin_notes, r.created_at::text as created_at
+      from attendance_requests r
+      join profiles p on p.user_id = r.user_id
+      join sites s on s.id = r.site_id
+      where r.status = ${status}
+        and (${requestKind === "all"} or coalesce(r.request_kind, 'review_request') = ${requestKind})
+      order by r.created_at desc
+      limit 100`;
+    return { rows };
+  });
+
+export async function executeReviewAttendanceRequest(
+  sqlOrTx: Sql | Parameters<Parameters<typeof withTransaction>[0]>[0],
+  adminUserId: string,
+  data: { requestId: number; decision: "approve" | "reject"; adminNotes?: string },
+) {
+  const notes = (data.adminNotes ?? "").trim();
+
+  const run = async (tx: Parameters<Parameters<typeof withTransaction>[0]>[0]) => {
+    const rows = await tx<{
+      id: number;
+      user_id: string;
+      site_id: number;
+      type: string;
+      request_kind: string;
+      attempted_at: string;
+      gps_fix_at: string | null;
+      lat: number | null;
+      lng: number | null;
+      accuracy_meters: number | null;
+      distance_meters: number | null;
+      reason: string;
+      device_id: string;
+      status: string;
+      client_event_id: string;
+      site_lat: number;
+      site_lng: number;
+      site_name: string;
+      full_name: string;
+      user_active: boolean;
+    }>`
+      select r.*, s.lat as site_lat, s.lng as site_lng, s.name as site_name,
+             p.full_name, p.active as user_active
+      from attendance_requests r
+      join sites s on s.id = r.site_id
+      join profiles p on p.user_id = r.user_id
+      where r.id = ${data.requestId}
+      for update`;
+    const req = rows[0];
+    if (!req) throw new Error("REQUEST_NOT_FOUND");
+    if (req.request_kind && req.request_kind !== "review_request") {
+      throw new Error("INVALID_REQUEST_KIND: Only review requests can be reviewed by admin.");
+    }
+    if (req.status !== "pending") throw new Error("ALREADY_REVIEWED: This request has already been processed.");
+
+    if (data.decision === "reject") {
+      await tx`
+        update attendance_requests
+        set status = 'rejected',
+            reviewed_by = ${adminUserId},
+            reviewed_at = now(),
+            admin_notes = ${notes || null}
+        where id = ${data.requestId}`;
+
+      await tx`
+        insert into activity_logs (user_id, kind, detail)
+        values (${adminUserId}, 'attendance_request_rejected', ${`Rejected request #${req.id} for ${req.full_name}: ${notes}`})`;
+
+      return { success: true, status: "rejected" };
+    }
+
+    // Approve path: create audited manual checkin
+    if (!req.user_active) throw new Error("EMPLOYEE_INACTIVE: Cannot approve attendance for inactive employee.");
+
+    // Lock worker profile to serialize with concurrent operations
+    await tx`select user_id from profiles where user_id = ${req.user_id} for update`;
+
+    // Deterministic client_event_id to prevent duplicate punch creation upon re-approval
+    const approvalEventId = `appr-req-${req.id}`;
+    const existingPunch = await tx<{ id: number }>`
+      select id from checkins where client_event_id = ${approvalEventId} limit 1`;
+    if (existingPunch[0]) {
+      throw new Error("ALREADY_APPROVED: A checkin record for this request already exists.");
+    }
+
+    await tx`
+      update attendance_requests
+      set status = 'approved',
+          reviewed_by = ${adminUserId},
+          reviewed_at = now(),
+          admin_notes = ${notes || null}
+      where id = ${data.requestId}`;
+
+    const approvalReason = `Approved review request #${req.id}: ${req.reason}${notes ? ` [Admin Note: ${notes}]` : ""}`;
+
+    const inserted = await tx<{ id: number; type: string; actual_time: string }>`
+      insert into checkins (
+        user_id, site_id, type, client_event_id, lat, lng, accuracy_meters, distance_meters, status,
+        device_id, device_matched, flagged, source, is_manual, actual_time, gps_fix_at,
+        created_by, reason, created_at
+      ) values (
+        ${req.user_id}, ${req.site_id}, ${req.type}, ${approvalEventId},
+        ${req.lat ?? req.site_lat}, ${req.lng ?? req.site_lng}, ${req.accuracy_meters ?? null},
+        ${req.distance_meters ?? 0}, 'inside',
+        ${req.device_id}, true, false, 'manual', true, ${req.attempted_at}, ${req.gps_fix_at},
+        ${adminUserId}, ${approvalReason}, now()
+      )
+      returning id, type, actual_time::text as actual_time`;
+
+    const checkin = inserted[0]!;
+
+    await tx`
+      insert into manual_attendance_audit (
+        checkin_id, admin_id, action, reason, target_user_id, actual_time, details
+      ) values (
+        ${checkin.id}, ${adminUserId}, 'create', ${approvalReason}, ${req.user_id},
+        ${req.attempted_at},
+        ${JSON.stringify({ requestId: req.id, type: req.type, siteId: req.site_id, adminId: adminUserId })}
+      )`;
+
+    await tx`
+      insert into activity_logs (user_id, kind, detail)
+      values (
+        ${adminUserId},
+        'manual_attendance_approved',
+        ${`Approved attendance request #${req.id} (${req.type}) for ${req.full_name}`})`;
+
+    return { success: true, status: "approved", checkinId: checkin.id, actual_time: checkin.actual_time };
+  };
+
+  if ("unsafe" in sqlOrTx || "begin" in sqlOrTx) {
+    return withTransaction(run);
+  }
+  return run(sqlOrTx as any);
+}
+
+export const reviewAttendanceRequest = createServerFn({ method: "POST" })
+  .validator((d: { requestId: number; decision: "approve" | "reject"; adminNotes?: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    await requireAdmin(context.userId);
+    const sql = await getSql();
+    return executeReviewAttendanceRequest(sql, context.userId, data);
   });

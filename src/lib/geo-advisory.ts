@@ -4,6 +4,8 @@ export type GpsAdvisoryState =
   | "insufficient_accuracy"
   | "outside"
   | "locating"
+  | "refining"
+  | "timeout"
   | "permission_denied";
 
 export function evaluateGpsAdvisory(

@@ -25,12 +25,13 @@ export function resolveMonth(monthParam?: string) {
 export async function getMonthlyAttendance(sql: Sql, userId: string, monthParam?: string) {
   const { month, start, end, daysInMonth } = resolveMonth(monthParam);
   const rows = await sql<{ day: string }>`
-    select distinct (created_at at time zone 'Africa/Cairo')::date::text as day
+    select distinct (actual_time at time zone 'Africa/Cairo')::date::text as day
     from checkins
     where user_id = ${userId}
       and type = 'check_in'
-      and created_at >= ${start}::date
-      and created_at < ${end}::date
+      and is_reversed = false
+      and actual_time >= ${start}::date
+      and actual_time < ${end}::date
     order by day`;
   return {
     month,
@@ -42,18 +43,46 @@ export async function getMonthlyAttendance(sql: Sql, userId: string, monthParam?
 
 export async function getDailyHours(sql: Sql, userId: string, monthParam?: string) {
   const { month, start, end, daysInMonth } = resolveMonth(monthParam);
-  const rows = await sql<{ type: string; created_at: string }>`
-    select type, created_at
-    from checkins
-    where user_id = ${userId}
-      and created_at >= ${start}::date
-      and created_at < ${end}::date
-    order by created_at asc`;
+  const rows = await sql<{ type: string; created_at: string; is_boundary: boolean }>`
+    with events as (
+      select type, actual_time as event_time, false as is_boundary
+      from checkins
+      where user_id = ${userId}
+        and is_reversed = false
+        and actual_time >= ${start}::date
+        and actual_time < ${end}::date
+      union all
+      select type, attempted_at as event_time, true as is_boundary
+      from attendance_requests
+      where user_id = ${userId}
+        and request_kind = 'rejected_punch'
+        and status = 'rejected'
+        and type = 'check_out'
+        and attempted_at >= ${start}::date
+        and attempted_at < ${end}::date
+    )
+    select type, event_time::text as created_at, is_boundary
+    from events
+    order by event_time asc`;
 
   const hoursByDay: Record<number, number> = {};
   let openSince: Date | null = null;
   for (const row of rows) {
     const at = new Date(row.created_at);
+    if (row.is_boundary) {
+      if (row.type === "check_out" && openSince) {
+        const cairoDay = Number(
+          new Intl.DateTimeFormat("en-GB", {
+            timeZone: "Africa/Cairo",
+            day: "numeric",
+          }).format(openSince),
+        );
+        const hrs = Math.min(PAYROLL_CAP_HOURS, (at.getTime() - openSince.getTime()) / 3_600_000);
+        hoursByDay[cairoDay] = (hoursByDay[cairoDay] || 0) + hrs;
+        openSince = null;
+      }
+      continue;
+    }
     if (row.type === "check_in") openSince = at;
     else if (row.type === "check_out" && openSince) {
       const cairoDay = Number(
@@ -91,13 +120,14 @@ export async function overviewRoster(sql: Sql) {
     day: string;
     site_name: string;
   }>`
-    select c.user_id, c.type, c.created_at::text as created_at,
-           (c.created_at at time zone 'Africa/Cairo')::date::text as day,
+    select c.user_id, c.type, c.actual_time::text as created_at,
+           (c.actual_time at time zone 'Africa/Cairo')::date::text as day,
            s.name as site_name
     from checkins c join sites s on s.id = c.site_id
-    where (c.created_at at time zone 'Africa/Cairo')::date >= ${start}::date
-      and (c.created_at at time zone 'Africa/Cairo')::date <= ${today}::date
-    order by c.created_at asc`;
+    where c.is_reversed = false
+      and (c.actual_time at time zone 'Africa/Cairo')::date >= ${start}::date
+      and (c.actual_time at time zone 'Africa/Cairo')::date <= ${today}::date
+    order by c.actual_time asc`;
 
   function statusesFor(day: string) {
     const firstIn: Record<string, (typeof events)[0]> = {};

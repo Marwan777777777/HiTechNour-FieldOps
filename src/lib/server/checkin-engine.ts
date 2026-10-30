@@ -41,6 +41,7 @@ export type CheckinPayload = {
   webauthnId?: string;
   type: "check_in" | "check_out";
   clientEventId: string;
+  gpsFixAt?: string | null;
 };
 
 export type CheckinResult = {
@@ -86,26 +87,26 @@ async function autoCloseStale(tx: Tx, userId: string) {
     site_id: number;
     lat: number;
     lng: number;
-    created_at: string;
+    actual_time: string;
     device_id: string;
   }>`
-    select id, type, site_id, lat, lng, created_at::text as created_at, device_id
-    from checkins where user_id = ${userId}
-    order by created_at desc, id desc limit 1`;
+    select id, type, site_id, lat, lng, actual_time::text as actual_time, device_id
+    from checkins where user_id = ${userId} and is_reversed = false
+    order by actual_time desc, id desc limit 1`;
   const last = prev[0];
   if (!last || last.type !== "check_in") return last ?? null;
-  const opened = new Date(last.created_at).getTime();
+  const opened = new Date(last.actual_time).getTime();
   const ageH = (Date.now() - opened) / 3_600_000;
   if (ageH < STALE_SHIFT_HOURS) return last;
   const closedAt = new Date(opened + STALE_SHIFT_HOURS * 3_600_000);
   await tx`
     insert into checkins (
       user_id, site_id, type, client_event_id, lat, lng, distance_meters, status,
-      device_id, device_matched, flagged, flag_reason, auto_closed, created_at
+      device_id, device_matched, flagged, flag_reason, auto_closed, source, actual_time, created_at
     ) values (
       ${userId}, ${last.site_id}, ${"check_out"}, ${randomUUID()},
       ${last.lat}, ${last.lng}, ${0}, ${"inside"},
-      ${last.device_id}, ${true}, ${false}, ${null}, ${true}, ${closedAt.toISOString()}
+      ${last.device_id}, ${true}, ${false}, ${null}, ${true}, ${"gps"}, ${closedAt.toISOString()}, ${closedAt.toISOString()}
     )`;
   await tx`insert into activity_logs (user_id, kind, detail)
     values (${userId}, ${"auto_checkout"}, ${`stale ${STALE_SHIFT_HOURS}h`})`;
@@ -272,7 +273,8 @@ export async function processCheckin(
         select site_id from assignments
         where user_id = ${userId}
           and start_date <= ${cairoDate()}::date
-          and end_date >= ${cairoDate()}::date`;
+          and end_date >= ${cairoDate()}::date
+          and coalesce(status, 'published') = 'published'`;
       if (
         todaysAssignments.length > 0 &&
         !todaysAssignments.some((a) => a.site_id === payload.siteId)
@@ -291,12 +293,12 @@ export async function processCheckin(
       site_id: number;
       lat: number;
       lng: number;
-      created_at: string;
+      actual_time: string;
       accuracy_meters: number | null;
     }>`
-      select type, site_id, lat, lng, created_at::text as created_at, accuracy_meters
-      from checkins where user_id = ${userId}
-      order by created_at desc, id desc limit 1`;
+      select type, site_id, lat, lng, actual_time::text as actual_time, accuracy_meters
+      from checkins where user_id = ${userId} and is_reversed = false
+      order by actual_time desc, id desc limit 1`;
     const previous = prev[0];
 
     if (payload.type === "check_in" && previous?.type === "check_in") {
@@ -319,8 +321,8 @@ export async function processCheckin(
 
     const history = await tx<{ lat: number; lng: number; accuracy_meters: number | null }>`
       select lat, lng, accuracy_meters from checkins
-      where user_id = ${userId}
-      order by created_at desc, id desc limit 4`;
+      where user_id = ${userId} and is_reversed = false
+      order by actual_time desc, id desc limit 4`;
 
     const dist = haversineMeters(payload.lat, payload.lng, site.lat, site.lng);
     // A raw dist <= radius comparison ignores that every GPS fix carries its
@@ -355,7 +357,7 @@ export async function processCheckin(
     let impossible = false;
     if (previous) {
       const meters = haversineMeters(payload.lat, payload.lng, previous.lat, previous.lng);
-      const hours = (Date.now() - new Date(previous.created_at).getTime()) / 3_600_000;
+      const hours = (Date.now() - new Date(previous.actual_time).getTime()) / 3_600_000;
       impossible = isImpossibleTravel(meters, hours);
     }
     const spoofed = isLikelySpoofedGps({
@@ -375,6 +377,8 @@ export async function processCheckin(
       impossibleTravel: impossible,
     });
 
+    const fixAt = payload.gpsFixAt ? new Date(payload.gpsFixAt).toISOString() : null;
+
     const inserted = await tx<{
       id: number;
       type: string;
@@ -387,27 +391,29 @@ export async function processCheckin(
       insert into checkins (
         user_id, site_id, type, client_event_id, lat, lng, accuracy_meters, altitude_meters, speed_mps,
         distance_meters, status,
-        device_id, device_matched, is_mock_location, is_off_hours, flagged, flag_reason
+        device_id, device_matched, is_mock_location, is_off_hours, flagged, flag_reason,
+        source, actual_time, gps_fix_at
       ) values (
         ${userId}, ${payload.siteId}, ${payload.type}, ${payload.clientEventId},
         ${payload.lat}, ${payload.lng}, ${payload.accuracy ?? null}, ${payload.altitude ?? null},
         ${payload.speed ?? null}, ${dist}, ${status},
         ${payload.deviceId}, ${true}, ${Boolean(payload.mock) || spoofed}, ${isOffHours()},
-        ${flag !== null}, ${flag}
+        ${flag !== null}, ${flag},
+        ${"gps"}, now(), ${fixAt}
       )
       on conflict (user_id, client_event_id) do nothing
-      returning id, type, distance_meters, status, flagged, flag_reason, created_at::text as created_at`;
+      returning id, type, distance_meters, status, flagged, flag_reason, actual_time::text as created_at`;
 
     const row = inserted[0];
     if (!row) {
       const dup = await tx<CheckinResult>`
         select c.id, c.type, c.distance_meters, c.status, c.flagged, c.flag_reason,
-               c.created_at::text as created_at, s.name as site_name, c.site_id
+               c.actual_time::text as created_at, s.name as site_name, c.site_id
         from checkins c join sites s on s.id = c.site_id
         where c.user_id = ${userId} and c.client_event_id = ${payload.clientEventId}
         limit 1`;
       const last = await tx<{ type: string }>`
-        select type from checkins where user_id = ${userId} order by created_at desc, id desc limit 1`;
+        select type from checkins where user_id = ${userId} and is_reversed = false order by actual_time desc, id desc limit 1`;
       return { ...dup[0], isCheckedIn: last[0]?.type === "check_in", replayed: true };
     }
 

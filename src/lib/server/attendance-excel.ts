@@ -85,11 +85,13 @@ export async function buildAttendanceWorkbook(sql: Sql, from: string, to: string
     type: string;
     site_name: string;
   }>`
-      select c.user_id, c.created_at::text as created_at, c.type, s.name as site_name
+      select c.user_id, c.actual_time::text as created_at, c.type, s.name as site_name
       from checkins c
       join sites s on s.id = c.site_id
-      where c.created_at >= ${data.from}::date and c.created_at < (${data.to}::date + interval '2 days')
-      order by c.user_id, c.created_at`;
+      where c.is_reversed = false
+        and c.actual_time >= ${data.from}::date
+        and c.actual_time < (${data.to}::date + interval '2 days')
+      order by c.user_id, c.actual_time`;
 
   const leaves = await sql<{
     user_id: string;

@@ -18,11 +18,12 @@ export async function loadDailyReport(sql: Sql, date: string): Promise<DailyRepo
     order by full_name`;
   const punches = await sql<PunchRow>`
     select c.user_id, c.type, s.name as site_name, c.distance_meters,
-           c.accuracy_meters, c.status, c.flagged, c.flag_reason, c.auto_closed,
-           (extract(epoch from c.created_at) * 1000)::bigint as at_ms
+           c.accuracy_meters, c.status, c.source, c.is_manual, c.flagged, c.flag_reason, c.auto_closed,
+           (extract(epoch from c.actual_time) * 1000)::bigint as at_ms
     from checkins c join sites s on s.id = c.site_id
-    where (c.created_at at time zone 'Africa/Cairo')::date = ${date}::date
-    order by c.created_at asc`;
+    where c.is_reversed = false
+      and (c.actual_time at time zone 'Africa/Cairo')::date = ${date}::date
+    order by c.actual_time asc`;
   const leaves = await sql<LeaveRow>`
     select user_id, kind from leave_requests
     where status = 'approved'

@@ -26,9 +26,8 @@ export function ShiftSummaryCard({
   todayHours: number;
 }) {
   // Find open check-in timestamp
-  const latestIn = isCheckedIn
-    ? timeline.find((e) => e.type === "check_in")?.created_at
-    : null;
+  const inEv = timeline.find((e) => e.type === "check_in");
+  const latestIn = isCheckedIn ? (inEv?.actual_time ?? inEv?.created_at ?? null) : null;
 
   const [elapsed, setElapsed] = useState("00:00:00");
 
@@ -85,7 +84,7 @@ export function ShiftSummaryCard({
         ) : (
           <ul className="mt-2.5 divide-y divide-line/40">
             {todayPunches.map((punch) => {
-              const date = new Date(punch.created_at);
+              const date = new Date(punch.actual_time ?? punch.created_at);
               const timeStr = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: true });
               const isIn = punch.type === "check_in";
               return (
@@ -102,7 +101,11 @@ export function ShiftSummaryCard({
                   </div>
                   <div className="text-end">
                     <span className="font-mono text-fg">{timeStr}</span>
-                    {punch.status === "inside" ? (
+                    {punch.is_manual ? (
+                      <span className="ms-1.5 rounded bg-sky-500/20 px-1 py-0.5 text-[9px] font-semibold text-sky-600 dark:text-sky-400">
+                        {t(locale, "manualBadge")}
+                      </span>
+                    ) : punch.status === "inside" ? (
                       <span className="ms-1.5 text-[10px] text-emerald-600 dark:text-emerald-400">✓</span>
                     ) : (
                       <span className="ms-1.5 text-[10px] text-rose-500">!</span>

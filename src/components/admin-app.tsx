@@ -31,9 +31,11 @@ import {
   adminReports,
   approveDevice,
   closeOpenShift,
+  createManualAttendance,
   exportAttendanceCsv,
   exportPayrollCsv,
   forceLogout,
+  listAttendanceRequests,
   listFlagged,
   listSites,
   listSiteGroups,
@@ -44,6 +46,8 @@ import {
   resetDevice,
   reviewCheckin,
   reviewReport,
+  reverseManualAttendance,
+  reviewAttendanceRequest,
   saveAssignment,
   saveSite,
   saveSiteGroup,
@@ -191,7 +195,11 @@ export function AdminApp({
   const getBadgeCount = (itemKey: AdminTab): number | undefined => {
     if (!overviewQuery.data) return undefined;
     if (itemKey === "queue") {
-      const count = overviewQuery.data.flagged + (overviewQuery.data.pending ?? 0);
+      const count =
+        (overviewQuery.data.flagged ?? 0) +
+        (overviewQuery.data.pendingRequests ?? 0) +
+        (overviewQuery.data.rejectedPunchesCount ?? 0) +
+        (overviewQuery.data.pendingDevices ?? 0);
       return count > 0 ? count : undefined;
     }
     if (itemKey === "leave") {
@@ -256,7 +264,7 @@ export function AdminApp({
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex-1 overflow-auto p-4 pb-24 md:p-6 md:pb-6">
-          {tab === "overview" ? <Overview locale={locale} /> : null}
+          {tab === "overview" ? <Overview locale={locale} onNavigate={(nextTab) => setTab(nextTab)} /> : null}
           {tab === "queue" ? <Queue locale={locale} /> : null}
           {tab === "people" ? <People locale={locale} home={home} /> : null}
           {tab === "attendance" ? <Attendance locale={locale} /> : null}
@@ -361,7 +369,13 @@ export function AdminApp({
   );
 }
 
-function Overview({ locale }: { locale: Locale }) {
+function Overview({
+  locale,
+  onNavigate,
+}: {
+  locale: Locale;
+  onNavigate: (tab: AdminTab) => void;
+}) {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["htn-overview"], queryFn: () => adminOverview(), refetchInterval: 15_000 });
   const map = useQuery({ queryKey: ["htn-live-map"], queryFn: () => liveMap(), refetchInterval: 20_000 });
@@ -377,49 +391,316 @@ function Overview({ locale }: { locale: Locale }) {
   if (q.isLoading) return <Skeleton className="h-64" />;
   if (!q.data) return <Empty>{t(locale, "loadError")}</Empty>;
   const d = q.data;
+
+  const totalUrgent =
+    (d.flagged ?? 0) +
+    (d.pendingRequests ?? 0) +
+    (d.rejectedPunchesCount ?? 0) +
+    (d.staleShiftsCount ?? 0) +
+    (d.pendingLeave ?? 0) +
+    (d.pendingDevices ?? 0);
+
   return (
     <div className="grid gap-6">
-      <div>
-        <h1 className="font-display text-2xl font-semibold">{t(locale, "overview")}</h1>
-        <p className="mt-1 font-mono text-xs text-muted">{d.today}</p>
+      {/* Header with Quick Navigation */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="font-display text-2xl font-semibold text-fg">{t(locale, "overview")}</h1>
+          <p className="mt-0.5 font-mono text-xs text-muted">
+            {d.today} · Cairo (UTC+2)
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs font-medium"
+            onClick={() => onNavigate("attendance")}
+          >
+            <History className="me-1.5 size-3.5" />
+            {t(locale, "attendance")}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs font-medium"
+            onClick={() => onNavigate("queue")}
+          >
+            <Flag className="me-1.5 size-3.5" />
+            {t(locale, "queue")}
+            {(d.flagged + (d.pendingRequests ?? 0) + (d.rejectedPunchesCount ?? 0)) > 0 ? (
+              <span className="ms-1.5 rounded-full bg-warn/20 px-1.5 py-0.2 font-mono text-[10px] font-bold text-warn">
+                {d.flagged + (d.pendingRequests ?? 0) + (d.rejectedPunchesCount ?? 0)}
+              </span>
+            ) : null}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs font-medium"
+            onClick={() => onNavigate("reports")}
+          >
+            <ClipboardList className="me-1.5 size-3.5" />
+            {t(locale, "reports")}
+            {(d.openReports ?? 0) > 0 ? (
+              <span className="ms-1.5 rounded-full bg-warn/20 px-1.5 py-0.2 font-mono text-[10px] font-bold text-warn">
+                {d.openReports}
+              </span>
+            ) : null}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs font-medium"
+            onClick={() => onNavigate("people")}
+          >
+            <Users className="me-1.5 size-3.5" />
+            {t(locale, "people")}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs font-medium"
+            onClick={() => onNavigate("sites")}
+          >
+            <MapPin className="me-1.5 size-3.5" />
+            {t(locale, "sites")}
+          </Button>
+        </div>
       </div>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <Stat label={t(locale, "present")} value={`${d.presentToday}/${d.totalWorkers}`} />
-        <Stat label={t(locale, "late")} value={d.lateToday} warn={d.lateToday > 0} />
-        <Stat label={t(locale, "absent")} value={d.absentToday} warn={d.absentToday > 0} />
-        <Stat label={t(locale, "flaggedQueue")} value={d.flagged} warn={d.flagged > 0} />
-        <Stat label={t(locale, "pendingLeave")} value={d.pendingLeave} warn={d.pendingLeave > 0} />
-      </div>
-      <div>
-        <Panel>
-          <Kicker>{t(locale, "weekly")}</Kicker>
-          <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={d.weekly}>
-                <XAxis dataKey="date" tickFormatter={(v: string) => v.slice(8)} stroke="var(--color-faint)" fontSize={11} />
-                <YAxis allowDecimals={false} stroke="var(--color-faint)" fontSize={11} width={28} />
-                <Tooltip
-                  contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-line)", fontSize: 12 }}
-                />
-                <Bar dataKey="present" fill="var(--color-ok)" stackId="a" />
-                <Bar dataKey="late" fill="var(--color-warn)" stackId="a" />
-                <Bar dataKey="absent" fill="var(--color-faint)" stackId="a" />
-              </BarChart>
-            </ResponsiveContainer>
+
+      {/* Action Center / Operational Issues Card */}
+      <div className={`rounded-2xl border p-4 transition-all ${
+        totalUrgent > 0
+          ? "border-amber-500/30 bg-amber-500/5 dark:bg-amber-950/10"
+          : "border-line bg-surface"
+      }`}>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <span className={`flex size-2 rounded-full ${totalUrgent > 0 ? "bg-amber-500 animate-pulse" : "bg-ok"}`} />
+            <h2 className="font-display text-sm font-bold uppercase tracking-wider text-fg">
+              {t(locale, "actionCenter")}
+            </h2>
+            {totalUrgent > 0 ? (
+              <StatusChip size="sm" variant="warn">
+                {totalUrgent} {t(locale, "attentionNeeded")}
+              </StatusChip>
+            ) : (
+              <StatusChip size="sm" variant="ok">
+                {t(locale, "cleanOperations")}
+              </StatusChip>
+            )}
           </div>
-        </Panel>
+        </div>
+
+        {totalUrgent > 0 ? (
+          <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            {/* Unclosed stale shifts */}
+            {(d.staleShiftsCount ?? 0) > 0 ? (
+              <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-xs text-rose-700 dark:text-rose-400">
+                    {t(locale, "staleShifts")}
+                  </span>
+                  <StatusChip size="sm" variant="bad">
+                    {d.staleShiftsCount}
+                  </StatusChip>
+                </div>
+                <p className="text-[11px] text-muted leading-tight">
+                  {t(locale, "staleShiftDesc")}
+                </p>
+                <div className="space-y-1.5 pt-1">
+                  {(d.staleShiftsList ?? []).slice(0, 3).map((stale) => (
+                    <div key={stale.user_id} className="flex items-center justify-between gap-2 text-xs">
+                      <span className="truncate font-medium text-fg max-w-[140px]">{stale.full_name}</span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-2 text-[10px] text-rose-600 hover:text-rose-700"
+                        disabled={closeShift.isPending}
+                        onClick={() => closeShift.mutate(stale.user_id)}
+                      >
+                        {t(locale, "closeShift")}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {/* Attendance review requests */}
+            {(d.pendingRequests ?? 0) > 0 ? (
+              <button
+                type="button"
+                onClick={() => onNavigate("queue")}
+                className="flex flex-col justify-between rounded-xl border border-line bg-surface p-3 text-start hover:bg-elevated/40 transition-colors"
+              >
+                <div className="flex items-center justify-between w-full">
+                  <span className="font-semibold text-xs text-fg">{t(locale, "reviewRequestsTab")}</span>
+                  <StatusChip size="sm" variant="warn">
+                    {d.pendingRequests}
+                  </StatusChip>
+                </div>
+                <p className="text-[11px] text-muted mt-1 leading-snug">
+                  {t(locale, "pendingReviewRequest")}
+                </p>
+                <span className="text-[11px] font-semibold text-primary mt-2">
+                  {t(locale, "viewDetails")} →
+                </span>
+              </button>
+            ) : null}
+
+            {/* Suspicious / Flagged punches */}
+            {(d.flagged ?? 0) > 0 ? (
+              <button
+                type="button"
+                onClick={() => onNavigate("queue")}
+                className="flex flex-col justify-between rounded-xl border border-line bg-surface p-3 text-start hover:bg-elevated/40 transition-colors"
+              >
+                <div className="flex items-center justify-between w-full">
+                  <span className="font-semibold text-xs text-fg">{t(locale, "flaggedPunchesTab")}</span>
+                  <StatusChip size="sm" variant="warn">
+                    {d.flagged}
+                  </StatusChip>
+                </div>
+                <p className="text-[11px] text-muted mt-1 leading-snug">
+                  {t(locale, "outside")} / mock / suspicious GPS
+                </p>
+                <span className="text-[11px] font-semibold text-primary mt-2">
+                  {t(locale, "viewDetails")} →
+                </span>
+              </button>
+            ) : null}
+
+            {/* Rejected punch attempts */}
+            {(d.rejectedPunchesCount ?? 0) > 0 ? (
+              <button
+                type="button"
+                onClick={() => onNavigate("queue")}
+                className="flex flex-col justify-between rounded-xl border border-line bg-surface p-3 text-start hover:bg-elevated/40 transition-colors"
+              >
+                <div className="flex items-center justify-between w-full">
+                  <span className="font-semibold text-xs text-fg">{t(locale, "rejectedPunchesTab")}</span>
+                  <StatusChip size="sm" variant="bad">
+                    {d.rejectedPunchesCount}
+                  </StatusChip>
+                </div>
+                <p className="text-[11px] text-muted mt-1 leading-snug">
+                  Automatic geofence rejections
+                </p>
+                <span className="text-[11px] font-semibold text-primary mt-2">
+                  {t(locale, "viewDetails")} →
+                </span>
+              </button>
+            ) : null}
+
+            {/* Pending Leave Requests */}
+            {(d.pendingLeave ?? 0) > 0 ? (
+              <button
+                type="button"
+                onClick={() => onNavigate("leave")}
+                className="flex flex-col justify-between rounded-xl border border-line bg-surface p-3 text-start hover:bg-elevated/40 transition-colors"
+              >
+                <div className="flex items-center justify-between w-full">
+                  <span className="font-semibold text-xs text-fg">{t(locale, "pendingLeave")}</span>
+                  <StatusChip size="sm" variant="warn">
+                    {d.pendingLeave}
+                  </StatusChip>
+                </div>
+                <p className="text-[11px] text-muted mt-1 leading-snug">
+                  Leave requests awaiting approval
+                </p>
+                <span className="text-[11px] font-semibold text-primary mt-2">
+                  {t(locale, "viewDetails")} →
+                </span>
+              </button>
+            ) : null}
+
+            {/* Pending Devices / Inactive Workers */}
+            {(d.pendingDevices ?? 0) > 0 ? (
+              <button
+                type="button"
+                onClick={() => onNavigate("people")}
+                className="flex flex-col justify-between rounded-xl border border-line bg-surface p-3 text-start hover:bg-elevated/40 transition-colors"
+              >
+                <div className="flex items-center justify-between w-full">
+                  <span className="font-semibold text-xs text-fg">{t(locale, "pendingApprovalsTab")}</span>
+                  <StatusChip size="sm" variant="neutral">
+                    {d.pendingDevices}
+                  </StatusChip>
+                </div>
+                <p className="text-[11px] text-muted mt-1 leading-snug">
+                  Worker device registrations & activations
+                </p>
+                <span className="text-[11px] font-semibold text-primary mt-2">
+                  {t(locale, "viewDetails")} →
+                </span>
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
+
+      {/* Main Stats (Interactive) */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <button
+          type="button"
+          onClick={() => onNavigate("attendance")}
+          className="text-start focus:outline-none transition-transform hover:scale-[1.01]"
+        >
+          <Stat label={t(locale, "present")} value={`${d.presentToday}/${d.totalWorkers}`} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onNavigate("attendance")}
+          className="text-start focus:outline-none transition-transform hover:scale-[1.01]"
+        >
+          <Stat label={t(locale, "late")} value={d.lateToday} warn={d.lateToday > 0} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onNavigate("attendance")}
+          className="text-start focus:outline-none transition-transform hover:scale-[1.01]"
+        >
+          <Stat label={t(locale, "absent")} value={d.absentToday} warn={d.absentToday > 0} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onNavigate("queue")}
+          className="text-start focus:outline-none transition-transform hover:scale-[1.01]"
+        >
+          <Stat
+            label={t(locale, "flaggedQueue")}
+            value={d.flagged + (d.pendingRequests ?? 0) + (d.rejectedPunchesCount ?? 0)}
+            warn={(d.flagged + (d.pendingRequests ?? 0) + (d.rejectedPunchesCount ?? 0)) > 0}
+          />
+        </button>
+        <button
+          type="button"
+          onClick={() => onNavigate("leave")}
+          className="text-start focus:outline-none transition-transform hover:scale-[1.01]"
+        >
+          <Stat label={t(locale, "pendingLeave")} value={d.pendingLeave} warn={d.pendingLeave > 0} />
+        </button>
+      </div>
+
+      {/* Today's Punches Feed */}
       <Panel>
-        <Kicker>{t(locale, "todayPunches")}</Kicker>
+        <div className="flex items-center justify-between mb-2">
+          <Kicker>{t(locale, "todayPunches")}</Kicker>
+          <span className="font-mono text-xs text-faint">
+            {(d.todayPunches ?? []).length} {t(locale, "allPunches").toLowerCase()}
+          </span>
+        </div>
         {(d.todayPunches ?? []).length === 0 ? (
           <Empty>{t(locale, "emptyTimeline")}</Empty>
         ) : (
-          <ul className="grid gap-0">
+          <ul className="grid gap-0 divide-y divide-line/40">
             {d.todayPunches.map((row) => (
               <li
                 key={row.id}
-                className={`flex flex-wrap items-center justify-between gap-2 border-t border-line py-2.5 text-sm ${
-                  row.isOpenShift ? "bg-elevated/40" : ""
+                className={`flex flex-wrap items-center justify-between gap-2 py-2.5 text-sm ${
+                  row.isOpenShift ? "bg-elevated/40 px-2 rounded-lg" : ""
                 }`}
               >
                 <div className="min-w-0">
@@ -464,6 +745,29 @@ function Overview({ locale }: { locale: Locale }) {
           </ul>
         )}
       </Panel>
+
+      {/* Weekly Chart */}
+      <div>
+        <Panel>
+          <Kicker>{t(locale, "weekly")}</Kicker>
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={d.weekly}>
+                <XAxis dataKey="date" tickFormatter={(v: string) => v.slice(8)} stroke="var(--color-faint)" fontSize={11} />
+                <YAxis allowDecimals={false} stroke="var(--color-faint)" fontSize={11} width={28} />
+                <Tooltip
+                  contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-line)", fontSize: 12 }}
+                />
+                <Bar dataKey="present" fill="var(--color-ok)" stackId="a" />
+                <Bar dataKey="late" fill="var(--color-warn)" stackId="a" />
+                <Bar dataKey="absent" fill="var(--color-faint)" stackId="a" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+      </div>
+
+      {/* Live Map */}
       <Panel className="p-0 overflow-hidden">
         <div className="px-4 pt-4">
           <Kicker>{t(locale, "liveMap")}</Kicker>
@@ -534,102 +838,546 @@ function TeamToday({ locale }: { locale: Locale }) {
 function Queue({ locale }: { locale: Locale }) {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["htn-queue"], queryFn: () => listFlagged() });
-  const refresh = () => void qc.invalidateQueries({ queryKey: ["htn-queue"] });
-  if (q.isLoading) return <Skeleton className="h-64" />;
-  const pending = q.data?.pendingPeople ?? [];
+  const attRequests = useQuery({
+    queryKey: ["htn-attendance-requests", "pending"],
+    queryFn: () => listAttendanceRequests({ data: { status: "pending", requestKind: "all" } }),
+  });
+  const [filter, setFilter] = useState<"all" | "review_requests" | "flagged" | "rejected_punches" | "approvals">("all");
+  const [reviewModalRequest, setReviewModalRequest] = useState<{
+    id: number;
+    full_name: string;
+    phone: string | null;
+    email: string | null;
+    site_name: string;
+    type: string;
+    request_kind?: string;
+    attempted_at: string;
+    reason: string;
+    accuracy_meters: number | null;
+    distance_meters: number | null;
+  } | null>(null);
+  const [adminNotes, setAdminNotes] = useState("");
+  const [reviewActionPending, setReviewActionPending] = useState(false);
+
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: ["htn-queue"] });
+    void qc.invalidateQueries({ queryKey: ["htn-attendance-requests"] });
+    void qc.invalidateQueries({ queryKey: ["htn-worker-attendance"] });
+    void qc.invalidateQueries({ queryKey: ["htn-overview"] });
+  };
+
+  if (q.isLoading || attRequests.isLoading) return <Skeleton className="h-64" />;
+  const pendingPeople = q.data?.pendingPeople ?? [];
   const flagged = q.data?.flagged ?? [];
+  const allRequests = attRequests.data?.rows ?? [];
+  const reviewRequests = allRequests.filter((r) => r.request_kind === "review_request");
+  const rejectedPunches = allRequests.filter((r) => r.request_kind === "rejected_punch");
+  const totalCount = reviewRequests.length + flagged.length + rejectedPunches.length + pendingPeople.length;
+
+  const showReviewRequests = (filter === "all" || filter === "review_requests") && reviewRequests.length > 0;
+  const showFlagged = (filter === "all" || filter === "flagged") && flagged.length > 0;
+  const showRejected = (filter === "all" || filter === "rejected_punches") && rejectedPunches.length > 0;
+  const showApprovals = (filter === "all" || filter === "approvals") && pendingPeople.length > 0;
+
+  const hasVisibleItems = showReviewRequests || showFlagged || showRejected || showApprovals;
+
   return (
     <div className="grid gap-6">
-      <h1 className="font-display text-2xl font-semibold">{t(locale, "flaggedQueue")}</h1>
-      {pending.length ? (
-        <section>
-          <Kicker>{t(locale, "pendingApprovals")}</Kicker>
-          <ul className="grid gap-2">
-            {pending.map((p) => (
-              <li key={p.user_id} className="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-3">
-                <div>
-                  <p className="text-sm font-medium">{p.full_name || p.email}</p>
-                  <p className="font-mono text-xs text-faint">
-                    {p.pending_device_id ? t(locale, "pendingDeviceTitle") : t(locale, "accountPending")}
-                  </p>
-                  {p.pending_device_id ? (
-                    <p className="font-mono text-[11px] text-faint truncate max-w-[200px]" title={p.pending_device_id}>
-                      {p.pending_device_id}
-                    </p>
-                  ) : null}
-                </div>
-                <div className="flex gap-2">
-                  {p.pending_device_id ? (
-                    <Button
-                      onClick={async () => {
-                        try {
-                          await approveDevice({
-                            data: {
-                              userId: p.user_id,
-                              expectedDeviceId: p.pending_device_id!,
-                            },
-                          });
-                        } catch (err: unknown) {
-                          const msg = err instanceof Error ? err.message : String(err);
-                          if (msg.includes("DEVICE_REQUEST_CHANGED") || msg.includes("NO_PENDING_DEVICE")) {
-                            toast.error(t(locale, "deviceRequestChanged"));
-                          } else {
-                            toast.error(msg);
-                          }
-                        }
-                        refresh();
-                      }}
-                    >
-                      {t(locale, "approveDevice")}
-                    </Button>
-                  ) : null}
-                  {!p.active ? (
-                    <Button
-                      variant={p.pending_device_id ? "outline" : "primary"}
-                      onClick={async () => {
-                        await setWorkerActive({ data: { userId: p.user_id, active: true } });
-                        refresh();
-                      }}
-                    >
-                      {t(locale, "activate")}
-                    </Button>
-                  ) : null}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-      {flagged.length === 0 ? (
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="font-display text-2xl font-semibold text-fg">{t(locale, "flaggedQueue")}</h1>
+          <p className="font-mono text-xs text-muted">
+            {totalCount} {t(locale, "attentionNeeded").toLowerCase()}
+          </p>
+        </div>
+        {totalCount > 0 ? (
+          <StatusChip size="sm" variant="warn">
+            {totalCount} {t(locale, "urgentItems")}
+          </StatusChip>
+        ) : (
+          <StatusChip size="sm" variant="ok">
+            {t(locale, "cleanOperations")}
+          </StatusChip>
+        )}
+      </div>
+
+      {/* Segment Filter Tabs */}
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-line pb-3">
+        <button
+          type="button"
+          onClick={() => setFilter("all")}
+          className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+            filter === "all"
+              ? "bg-primary text-primary-fg shadow-xs"
+              : "bg-surface text-muted hover:bg-elevated hover:text-fg border border-line/60"
+          }`}
+        >
+          <span>{t(locale, "allQueueItems")}</span>
+          <span className="font-mono font-bold">{totalCount}</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilter("review_requests")}
+          className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+            filter === "review_requests"
+              ? "bg-primary text-primary-fg shadow-xs"
+              : "bg-surface text-muted hover:bg-elevated hover:text-fg border border-line/60"
+          }`}
+        >
+          <span>{t(locale, "reviewRequestsTab")}</span>
+          {reviewRequests.length > 0 ? (
+            <span className="rounded-full bg-warn/20 px-1.5 font-mono text-[10px] font-bold text-warn">
+              {reviewRequests.length}
+            </span>
+          ) : (
+            <span className="font-mono text-[10px]">0</span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilter("flagged")}
+          className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+            filter === "flagged"
+              ? "bg-primary text-primary-fg shadow-xs"
+              : "bg-surface text-muted hover:bg-elevated hover:text-fg border border-line/60"
+          }`}
+        >
+          <span>{t(locale, "flaggedPunchesTab")}</span>
+          {flagged.length > 0 ? (
+            <span className="rounded-full bg-warn/20 px-1.5 font-mono text-[10px] font-bold text-warn">
+              {flagged.length}
+            </span>
+          ) : (
+            <span className="font-mono text-[10px]">0</span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilter("rejected_punches")}
+          className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+            filter === "rejected_punches"
+              ? "bg-primary text-primary-fg shadow-xs"
+              : "bg-surface text-muted hover:bg-elevated hover:text-fg border border-line/60"
+          }`}
+        >
+          <span>{t(locale, "rejectedPunchesTab")}</span>
+          {rejectedPunches.length > 0 ? (
+            <span className="rounded-full bg-rose-500/20 px-1.5 font-mono text-[10px] font-bold text-rose-600 dark:text-rose-400">
+              {rejectedPunches.length}
+            </span>
+          ) : (
+            <span className="font-mono text-[10px]">0</span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilter("approvals")}
+          className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+            filter === "approvals"
+              ? "bg-primary text-primary-fg shadow-xs"
+              : "bg-surface text-muted hover:bg-elevated hover:text-fg border border-line/60"
+          }`}
+        >
+          <span>{t(locale, "pendingApprovalsTab")}</span>
+          {pendingPeople.length > 0 ? (
+            <span className="rounded-full bg-primary/20 px-1.5 font-mono text-[10px] font-bold text-primary">
+              {pendingPeople.length}
+            </span>
+          ) : (
+            <span className="font-mono text-[10px]">0</span>
+          )}
+        </button>
+      </div>
+
+      {!hasVisibleItems ? (
         <Empty>{t(locale, "noFlags")}</Empty>
       ) : (
-        <ul className="grid gap-2">
-          {flagged.map((row) => (
-            <li key={row.id} className="rounded-xl border border-line bg-surface p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium">{row.full_name}</p>
-                  <p className="font-mono text-xs text-muted">
-                    {row.site_name} · {row.type} · {Math.round(row.distance_meters)} m
-                  </p>
-                  <div className="mt-2">
-                    <FlagChip reason={row.flag_reason} />
-                  </div>
+        <div className="grid gap-6">
+          {/* Review Requests Section */}
+          {showReviewRequests ? (
+            <section className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Kicker>{t(locale, "reviewRequestsTab")}</Kicker>
+                  <StatusChip size="sm" variant="info">
+                    {reviewRequests.length}
+                  </StatusChip>
                 </div>
-                <Button
-                  variant="outline"
-                  onClick={async () => {
-                    await reviewCheckin({ data: { id: row.id } });
-                    refresh();
-                  }}
-                >
-                  {t(locale, "review")}
-                </Button>
               </div>
-            </li>
-          ))}
-        </ul>
+              <ul className="grid gap-2.5">
+                {reviewRequests.map((r) => (
+                  <li
+                    key={r.id}
+                    className="rounded-xl border border-line bg-surface p-4 transition-colors hover:border-line/80 space-y-3"
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                      <div className="space-y-1.5 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-sm text-fg">{r.full_name}</span>
+                          <span className="font-mono text-xs text-muted">· {r.phone || r.email || ""}</span>
+                          <StatusChip size="sm" variant="info">
+                            {t(locale, "reviewRequestsTab")}
+                          </StatusChip>
+                          <span className="rounded bg-elevated px-1.5 py-0.5 text-[10px] font-semibold text-muted uppercase">
+                            {r.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted">
+                          <span className="font-semibold text-fg">{r.site_name}</span> ·{" "}
+                          <span className="font-mono">
+                            {new Date(r.attempted_at).toLocaleString(locale === "ar" ? "ar-EG" : "en-US")}
+                          </span>
+                        </p>
+                        <div className="flex items-center gap-2 font-mono text-[11px] text-faint">
+                          <span>{t(locale, "distance")}: {r.distance_meters != null ? `${Math.round(r.distance_meters)}m` : "—"}</span>
+                          <span>·</span>
+                          <span>{t(locale, "accuracy")}: {r.accuracy_meters != null ? `±${Math.round(r.accuracy_meters)}m` : "—"}</span>
+                        </div>
+                        <div className="rounded-lg bg-elevated/70 p-2.5 text-xs text-fg border border-line/60">
+                          <span className="text-muted block text-[10px] uppercase font-bold tracking-wider mb-0.5">
+                            {t(locale, "reasonForRequest")}:
+                          </span>
+                          <span className="italic">"{r.reason}"</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-9 px-3 text-xs"
+                          onClick={async () => {
+                            try {
+                              await reviewAttendanceRequest({
+                                data: { requestId: r.id, decision: "reject" },
+                              });
+                              toast.success(t(locale, "requestRejected"));
+                              refresh();
+                            } catch (err) {
+                              toast.error(err instanceof Error ? err.message : "Failed to reject request");
+                            }
+                          }}
+                        >
+                          {t(locale, "rejectRequest")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="h-9 px-3 text-xs font-semibold"
+                          onClick={() => {
+                            setReviewModalRequest(r);
+                            setAdminNotes("");
+                          }}
+                        >
+                          {t(locale, "approveRequest")}
+                        </Button>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {/* Rejected Punch Attempts Section */}
+          {showRejected ? (
+            <section className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Kicker>{t(locale, "rejectedPunchesTab")}</Kicker>
+                  <StatusChip size="sm" variant="bad">
+                    {rejectedPunches.length}
+                  </StatusChip>
+                </div>
+              </div>
+              <ul className="grid gap-2.5">
+                {rejectedPunches.map((r) => (
+                  <li
+                    key={r.id}
+                    className="rounded-xl border border-rose-500/20 bg-surface p-4 transition-colors space-y-3"
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                      <div className="space-y-1.5 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-sm text-fg">{r.full_name}</span>
+                          <span className="font-mono text-xs text-muted">· {r.phone || r.email || ""}</span>
+                          <StatusChip size="sm" variant="bad">
+                            {t(locale, "rejectedPunchesTab")}
+                          </StatusChip>
+                          <span className="rounded bg-elevated px-1.5 py-0.5 text-[10px] font-semibold text-muted uppercase">
+                            {r.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted">
+                          <span className="font-semibold text-fg">{r.site_name}</span> ·{" "}
+                          <span className="font-mono">
+                            {new Date(r.attempted_at).toLocaleString(locale === "ar" ? "ar-EG" : "en-US")}
+                          </span>
+                        </p>
+                        <div className="flex items-center gap-2 font-mono text-[11px] text-faint">
+                          <span>{t(locale, "distance")}: {r.distance_meters != null ? `${Math.round(r.distance_meters)}m` : "—"}</span>
+                          <span>·</span>
+                          <span>{t(locale, "accuracy")}: {r.accuracy_meters != null ? `±${Math.round(r.accuracy_meters)}m` : "—"}</span>
+                        </div>
+                        <p className="text-xs text-rose-600 dark:text-rose-400 font-mono text-[11px]">
+                          {r.reason}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-9 px-3 text-xs"
+                          onClick={async () => {
+                            try {
+                              await reviewAttendanceRequest({
+                                data: { requestId: r.id, decision: "reject" },
+                              });
+                              toast.success(t(locale, "requestRejected"));
+                              refresh();
+                            } catch (err) {
+                              toast.error(err instanceof Error ? err.message : "Failed to dismiss request");
+                            }
+                          }}
+                        >
+                          {t(locale, "rejectRequest")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-9 px-3 text-xs"
+                          onClick={() => {
+                            setReviewModalRequest(r);
+                            setAdminNotes("");
+                          }}
+                        >
+                          {t(locale, "approveRequest")}
+                        </Button>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {/* Flagged Checkins Section */}
+          {showFlagged ? (
+            <section className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Kicker>{t(locale, "flaggedPunchesTab")}</Kicker>
+                  <StatusChip size="sm" variant="warn">
+                    {flagged.length}
+                  </StatusChip>
+                </div>
+              </div>
+              <ul className="grid gap-2">
+                {flagged.map((row) => (
+                  <li key={row.id} className="rounded-xl border border-line bg-surface p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-sm text-fg">{row.full_name}</span>
+                          <StatusChip size="sm" variant="warn">
+                            {t(locale, "flaggedPunchesTab")}
+                          </StatusChip>
+                        </div>
+                        <p className="font-mono text-xs text-muted">
+                          {row.site_name} · {row.type} · {Math.round(row.distance_meters)} m
+                        </p>
+                        <div className="mt-1.5">
+                          <FlagChip reason={row.flag_reason} />
+                        </div>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-9 px-3 text-xs shrink-0"
+                        onClick={async () => {
+                          await reviewCheckin({ data: { id: row.id } });
+                          refresh();
+                        }}
+                      >
+                        {t(locale, "review")}
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {/* Pending Approvals (Devices & Accounts) */}
+          {showApprovals ? (
+            <section className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Kicker>{t(locale, "pendingApprovals")}</Kicker>
+                  <StatusChip size="sm" variant="neutral">
+                    {pendingPeople.length}
+                  </StatusChip>
+                </div>
+              </div>
+              <ul className="grid gap-2">
+                {pendingPeople.map((p) => (
+                  <li key={p.user_id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-line bg-surface px-4 py-3">
+                    <div>
+                      <p className="text-sm font-semibold text-fg">{p.full_name || p.email}</p>
+                      <p className="font-mono text-xs text-faint">
+                        {p.pending_device_id ? t(locale, "pendingDeviceTitle") : t(locale, "accountPending")}
+                      </p>
+                      {p.pending_device_id ? (
+                        <p className="font-mono text-[11px] text-faint truncate max-w-[200px]" title={p.pending_device_id}>
+                          {p.pending_device_id}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                      {p.pending_device_id ? (
+                        <Button
+                          size="sm"
+                          className="h-9 px-3 text-xs"
+                          onClick={async () => {
+                            try {
+                              await approveDevice({
+                                data: {
+                                  userId: p.user_id,
+                                  expectedDeviceId: p.pending_device_id!,
+                                },
+                              });
+                            } catch (err: unknown) {
+                              const msg = err instanceof Error ? err.message : String(err);
+                              if (msg.includes("DEVICE_REQUEST_CHANGED") || msg.includes("NO_PENDING_DEVICE")) {
+                                toast.error(t(locale, "deviceRequestChanged"));
+                              } else {
+                                toast.error(msg);
+                              }
+                            }
+                            refresh();
+                          }}
+                        >
+                          {t(locale, "approveDevice")}
+                        </Button>
+                      ) : null}
+                      {!p.active ? (
+                        <Button
+                          size="sm"
+                          variant={p.pending_device_id ? "outline" : "primary"}
+                          className="h-9 px-3 text-xs"
+                          onClick={async () => {
+                            await setWorkerActive({ data: { userId: p.user_id, active: true } });
+                            refresh();
+                          }}
+                        >
+                          {t(locale, "activate")}
+                        </Button>
+                      ) : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+        </div>
       )}
+
+      {/* Review Request Approval Modal */}
+      {reviewModalRequest ? (
+        <Sheet
+          open={Boolean(reviewModalRequest)}
+          onOpenChange={(open) => !open && setReviewModalRequest(null)}
+          title={t(locale, "approveRequest")}
+        >
+          <div className="grid gap-3 text-xs">
+            <p className="text-muted leading-relaxed">
+              {t(locale, "confirmManualEntryDesc")}
+            </p>
+            <div className="rounded-xl border border-line bg-elevated p-3 space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-muted">{t(locale, "people")}</span>
+                <span className="font-semibold text-fg">{reviewModalRequest.full_name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted">{t(locale, "site")}</span>
+                <span className="font-semibold text-fg">{reviewModalRequest.site_name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted">{t(locale, "eventType")}</span>
+                <span className="font-medium text-fg">
+                  {reviewModalRequest.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted">{t(locale, "actualTime")}</span>
+                <span className="font-mono text-fg">
+                  {new Date(reviewModalRequest.attempted_at).toLocaleString(locale === "ar" ? "ar-EG" : "en-US")}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted">{t(locale, "reasonForRequest")}</span>
+                <span className="text-fg italic truncate max-w-[200px]">"{reviewModalRequest.reason}"</span>
+              </div>
+            </div>
+
+            <div className="grid gap-1">
+              <label htmlFor="admin-notes" className="font-medium text-fg">
+                {t(locale, "adminNotes")}
+              </label>
+              <textarea
+                id="admin-notes"
+                rows={2}
+                className="w-full rounded-xl border border-line bg-elevated px-3 py-2 text-xs text-fg placeholder:text-muted/60 focus:border-primary focus:outline-none"
+                placeholder={t(locale, "adminNotes")}
+                value={adminNotes}
+                onChange={(e) => setAdminNotes(e.target.value)}
+              />
+            </div>
+
+            <div className="mt-2 flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="flex-1 text-xs"
+                onClick={() => setReviewModalRequest(null)}
+                disabled={reviewActionPending}
+              >
+                {t(locale, "cancel")}
+              </Button>
+              <Button
+                type="button"
+                className="flex-1 text-xs"
+                disabled={reviewActionPending}
+                onClick={async () => {
+                  setReviewActionPending(true);
+                  try {
+                    await reviewAttendanceRequest({
+                      data: {
+                        requestId: reviewModalRequest.id,
+                        decision: "approve",
+                        adminNotes: adminNotes.trim() || undefined,
+                      },
+                    });
+                    toast.success(t(locale, "requestApproved"));
+                    setReviewModalRequest(null);
+                    refresh();
+                  } catch (err) {
+                    toast.error(err instanceof Error ? err.message : "Failed to approve request");
+                  } finally {
+                    setReviewActionPending(false);
+                  }
+                }}
+              >
+                {reviewActionPending ? t(locale, "submitting") : t(locale, "approveRequest")}
+              </Button>
+            </div>
+          </div>
+        </Sheet>
+      ) : null}
     </div>
   );
 }
@@ -637,6 +1385,7 @@ function Queue({ locale }: { locale: Locale }) {
 function People({ locale, home }: { locale: Locale; home: HomeData }) {
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
+  const [mobileListOpen, setMobileListOpen] = useState(false);
   const list = useQuery({
     queryKey: ["htn-workers", q],
     queryFn: () => listWorkers({ data: { q, includeInactive: true } }),
@@ -654,10 +1403,20 @@ function People({ locale, home }: { locale: Locale; home: HomeData }) {
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
-      <div>
+      <div className={selected && !mobileListOpen ? "hidden lg:block" : "block"}>
         <div className="flex items-center justify-between gap-3">
           <h1 className="font-display text-2xl font-semibold">{t(locale, "people")}</h1>
         </div>
+        {selected && mobileListOpen ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="mt-2 text-xs lg:hidden"
+            onClick={() => setMobileListOpen(false)}
+          >
+            ← {t(locale, "viewDetails")}
+          </Button>
+        ) : null}
         <CreatePerson locale={locale} onDone={refresh} />
         <input
           className="mt-3 h-11 w-full rounded-lg border border-line bg-elevated px-3 text-sm"
@@ -673,7 +1432,10 @@ function People({ locale, home }: { locale: Locale; home: HomeData }) {
               <li key={row.user_id}>
                 <button
                   type="button"
-                  onClick={() => setSelected(row.user_id)}
+                  onClick={() => {
+                    setSelected(row.user_id);
+                    setMobileListOpen(false);
+                  }}
                   className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-start ${
                     selected === row.user_id ? "bg-elevated" : "hover:bg-surface"
                   }`}
@@ -692,6 +1454,26 @@ function People({ locale, home }: { locale: Locale; home: HomeData }) {
         )}
       </div>
       <div>
+        {/* Mobile active employee bar (< lg) */}
+        {selected && !mobileListOpen ? (
+          <div className="mb-4 flex items-center justify-between rounded-xl border border-primary/30 bg-primary/5 p-3.5 lg:hidden">
+            <div className="min-w-0">
+              <p className="text-[11px] font-medium text-muted">{t(locale, "selectedWorker")}</p>
+              <p className="font-semibold text-sm text-fg truncate">
+                {detail.data?.user.full_name ?? selected}
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs shrink-0"
+              onClick={() => setMobileListOpen(true)}
+            >
+              {t(locale, "backToList")}
+            </Button>
+          </div>
+        ) : null}
+
         {!selected ? (
           <Empty>{t(locale, "noPeople")}</Empty>
         ) : detail.isLoading || !detail.data ? (
@@ -975,11 +1757,13 @@ function startOfMonthIso() {
 }
 
 function Attendance({ locale }: { locale: Locale }) {
+  const qc = useQueryClient();
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<{ id: string; name: string } | null>(null);
   const [from, setFrom] = useState(dateNDaysAgo(30));
   const [to, setTo] = useState(todayIso());
   const [openDay, setOpenDay] = useState<string | null>(null);
+  const [mobileWorkerListOpen, setMobileWorkerListOpen] = useState(false);
   const [mapPunch, setMapPunch] = useState<{
     lat: number;
     lng: number;
@@ -988,9 +1772,35 @@ function Attendance({ locale }: { locale: Locale }) {
     type: string;
   } | null>(null);
 
+  // Manual attendance entry state
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualStep, setManualStep] = useState<"form" | "confirm">("form");
+  const [manualUserId, setManualUserId] = useState("");
+  const [manualSiteId, setManualSiteId] = useState<number | "">("");
+  const [manualType, setManualType] = useState<"check_in" | "check_out">("check_in");
+  const [manualDate, setManualDate] = useState(cairoDate());
+  const [manualTime, setManualTime] = useState("09:00");
+  const [manualReason, setManualReason] = useState("");
+  const [manualSubmitting, setManualSubmitting] = useState(false);
+
+  // Reversal state
+  const [reversalPunch, setReversalPunch] = useState<{
+    id: number;
+    site_name: string;
+    type: string;
+    time: string;
+  } | null>(null);
+  const [reversalReason, setReversalReason] = useState("");
+  const [reversalSubmitting, setReversalSubmitting] = useState(false);
+
   const list = useQuery({
     queryKey: ["htn-workers", q],
     queryFn: () => listWorkers({ data: { q, includeInactive: true } }),
+  });
+
+  const sites = useQuery({
+    queryKey: ["htn-sites"],
+    queryFn: () => listSites(),
   });
 
   const history = useQuery({
@@ -999,12 +1809,97 @@ function Attendance({ locale }: { locale: Locale }) {
     enabled: Boolean(selected),
   });
 
-  const applyPreset = (preset: "today" | "week" | "month" | "30") => {
-    setTo(todayIso());
-    if (preset === "today") setFrom(todayIso());
-    else if (preset === "week") setFrom(startOfWeekIso());
-    else if (preset === "month") setFrom(startOfMonthIso());
-    else setFrom(dateNDaysAgo(30));
+  const openManualEntry = (prefillUserId?: string) => {
+    setManualUserId(prefillUserId ?? selected?.id ?? list.data?.rows[0]?.user_id ?? "");
+    setManualSiteId(sites.data?.rows[0]?.id ?? "");
+    setManualType("check_in");
+    setManualDate(cairoDate());
+    const now = new Date();
+    const cairoH = String(now.getUTCHours() + 2).padStart(2, "0");
+    const cairoM = String(now.getUTCMinutes()).padStart(2, "0");
+    setManualTime(`${cairoH}:${cairoM}`);
+    setManualReason("");
+    setManualStep("form");
+    setManualOpen(true);
+  };
+
+  const handleManualSubmit = async () => {
+    if (!manualUserId || !manualSiteId || !manualDate || !manualTime) return;
+    const reason = manualReason.trim();
+    if (reason.length < 5) {
+      toast.error(t(locale, "reviewReasonRequired"));
+      return;
+    }
+    const actualIso = new Date(`${manualDate}T${manualTime}:00+02:00`).toISOString();
+    setManualSubmitting(true);
+    try {
+      await createManualAttendance({
+        data: {
+          userId: manualUserId,
+          siteId: Number(manualSiteId),
+          type: manualType,
+          actualTime: actualIso,
+          reason,
+        },
+      });
+      toast.success(t(locale, "saved"));
+      setManualOpen(false);
+      setManualStep("form");
+      setManualReason("");
+      void history.refetch();
+      void qc.invalidateQueries({ queryKey: ["htn-overview"] });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to record manual attendance");
+    } finally {
+      setManualSubmitting(false);
+    }
+  };
+
+  const handleReversalSubmit = async () => {
+    if (!reversalPunch) return;
+    const reason = reversalReason.trim();
+    if (reason.length < 5) {
+      toast.error(t(locale, "reviewReasonRequired"));
+      return;
+    }
+    setReversalSubmitting(true);
+    try {
+      await reverseManualAttendance({
+        data: {
+          checkinId: reversalPunch.id,
+          reason,
+        },
+      });
+      toast.success(t(locale, "saved"));
+      setReversalPunch(null);
+      setReversalReason("");
+      void history.refetch();
+      void qc.invalidateQueries({ queryKey: ["htn-overview"] });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to reverse attendance entry");
+    } finally {
+      setReversalSubmitting(false);
+    }
+  };
+
+  const applyPreset = (preset: "today" | "yesterday" | "week" | "month" | "30") => {
+    if (preset === "today") {
+      setTo(todayIso());
+      setFrom(todayIso());
+    } else if (preset === "yesterday") {
+      const y = dateNDaysAgo(1);
+      setTo(y);
+      setFrom(y);
+    } else if (preset === "week") {
+      setTo(todayIso());
+      setFrom(startOfWeekIso());
+    } else if (preset === "month") {
+      setTo(todayIso());
+      setFrom(startOfMonthIso());
+    } else {
+      setTo(todayIso());
+      setFrom(dateNDaysAgo(30));
+    }
   };
 
   const downloadCsv = async () => {
@@ -1021,8 +1916,23 @@ function Attendance({ locale }: { locale: Locale }) {
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.4fr)]">
-      <div>
-        <h1 className="font-display text-2xl font-semibold">{t(locale, "attendance")}</h1>
+      <div className={selected && !mobileWorkerListOpen ? "hidden lg:block" : "block"}>
+        <div className="flex items-center justify-between gap-2">
+          <h1 className="font-display text-2xl font-semibold">{t(locale, "attendance")}</h1>
+          <Button size="sm" onClick={() => openManualEntry()}>
+            {t(locale, "addManualPunch")}
+          </Button>
+        </div>
+        {selected && mobileWorkerListOpen ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="mt-2 text-xs lg:hidden"
+            onClick={() => setMobileWorkerListOpen(false)}
+          >
+            ← {t(locale, "backToList")}
+          </Button>
+        ) : null}
         <input
           className="mt-3 h-11 w-full rounded-lg border border-line bg-elevated px-3 text-sm"
           placeholder={t(locale, "search")}
@@ -1040,6 +1950,7 @@ function Attendance({ locale }: { locale: Locale }) {
                   onClick={() => {
                     setSelected({ id: row.user_id, name: row.full_name });
                     setOpenDay(null);
+                    setMobileWorkerListOpen(false);
                   }}
                   className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-start ${
                     selected?.id === row.user_id ? "bg-elevated" : "hover:bg-surface"
@@ -1057,6 +1968,24 @@ function Attendance({ locale }: { locale: Locale }) {
       </div>
 
       <div>
+        {/* Mobile active worker banner (< lg) */}
+        {selected && !mobileWorkerListOpen ? (
+          <div className="mb-4 flex items-center justify-between rounded-xl border border-primary/30 bg-primary/5 p-3.5 lg:hidden">
+            <div className="min-w-0">
+              <p className="text-[11px] font-medium text-muted">{t(locale, "selectedWorker")}</p>
+              <p className="font-semibold text-sm text-fg truncate">{selected.name}</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs shrink-0"
+              onClick={() => setMobileWorkerListOpen(true)}
+            >
+              {t(locale, "changeWorker")}
+            </Button>
+          </div>
+        ) : null}
+
         {!selected ? (
           <Empty>{t(locale, "attPickWorker")}</Empty>
         ) : (
@@ -1064,10 +1993,15 @@ function Attendance({ locale }: { locale: Locale }) {
             <Panel className="grid gap-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="font-display text-lg font-semibold">{selected.name}</h2>
-                <Button variant="outline" onClick={downloadCsv}>
-                  <Download className="me-1.5 size-3.5" />
-                  {t(locale, "attDownloadCsv")}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => openManualEntry(selected.id)}>
+                    {t(locale, "addManualPunch")}
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={downloadCsv}>
+                    <Download className="me-1.5 size-3.5" />
+                    {t(locale, "attDownloadCsv")}
+                  </Button>
+                </div>
               </div>
               <div className="flex flex-wrap items-end gap-2">
                 <label className="grid gap-1 text-xs text-muted">
@@ -1094,6 +2028,9 @@ function Attendance({ locale }: { locale: Locale }) {
                 <div className="flex flex-wrap gap-1.5">
                   <Button variant="ghost" className="h-9 px-2.5 text-xs" onClick={() => applyPreset("today")}>
                     {t(locale, "attPresetToday")}
+                  </Button>
+                  <Button variant="ghost" className="h-9 px-2.5 text-xs" onClick={() => applyPreset("yesterday")}>
+                    {t(locale, "attPresetYesterday")}
                   </Button>
                   <Button variant="ghost" className="h-9 px-2.5 text-xs" onClick={() => applyPreset("week")}>
                     {t(locale, "attPresetWeek")}
@@ -1129,6 +2066,52 @@ function Attendance({ locale }: { locale: Locale }) {
                     warn={history.data.summary.openShiftDays > 0}
                   />
                 </div>
+
+                {/* Attendance Review Requests (Reference / Audit) */}
+                {history.data.requests && history.data.requests.length > 0 ? (
+                  <div className="rounded-xl border border-line bg-surface p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <Kicker>{t(locale, "attendanceRequests")}</Kicker>
+                      <span className="text-[11px] text-muted font-mono">{history.data.requests.length} total</span>
+                    </div>
+                    <ul className="grid gap-2">
+                      {history.data.requests.map((r) => (
+                        <li
+                          key={r.id}
+                          className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-lg border border-line/60 bg-elevated px-3 py-2 text-xs"
+                        >
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-fg">
+                                {r.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")} · {r.site_name}
+                              </span>
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-[10px] font-mono font-medium ${
+                                  r.status === "approved"
+                                    ? "bg-ok/20 text-ok"
+                                    : r.status === "rejected"
+                                    ? "bg-bad/20 text-bad"
+                                    : "bg-amber-500/20 text-amber-500"
+                                }`}
+                              >
+                                {r.status}
+                              </span>
+                            </div>
+                            <p className="mt-0.5 text-muted font-mono text-[11px]">
+                              {new Date(r.attempted_at).toLocaleString(locale === "ar" ? "ar-EG" : "en-US")}
+                            </p>
+                            <p className="mt-0.5 text-muted italic">"{r.reason}"</p>
+                          </div>
+                          {r.admin_notes ? (
+                            <span className="text-[11px] text-faint max-w-[200px] truncate sm:text-end">
+                              Note: {r.admin_notes}
+                            </span>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
 
                 {history.data.days.length === 0 ? (
                   <Empty>{t(locale, "attNoData")}</Empty>
@@ -1177,46 +2160,95 @@ function Attendance({ locale }: { locale: Locale }) {
                                       <th className="py-2.5 text-start font-semibold">{t(locale, "distance")}</th>
                                       <th className="py-2.5 text-start font-semibold">{t(locale, "accuracy")}</th>
                                       <th className="py-2.5 text-start font-semibold">{t(locale, "colStatus")}</th>
-                                      <th className="py-2.5 pe-4 text-end font-semibold">{t(locale, "colMap")}</th>
+                                      <th className="py-2.5 pe-4 text-end font-semibold">{t(locale, "actions")}</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-line/40">
                                     {d.punches.map((p) => (
                                       <tr key={p.id} className="hover:bg-elevated/40 transition-colors">
                                         <td className="py-2.5 ps-4 font-semibold text-fg">
-                                          <span className="flex items-center gap-1.5">
+                                          <div className="flex items-center gap-1.5 flex-wrap">
                                             <span className={`size-2 rounded-full ${p.type === "check_in" ? "bg-ok" : "bg-bad"}`} />
-                                            {p.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
-                                          </span>
+                                            <span>{p.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}</span>
+                                            {p.is_manual ? (
+                                              <span className="rounded bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-sky-600 dark:text-sky-400">
+                                                {t(locale, "manualBadge")}
+                                              </span>
+                                            ) : null}
+                                            {p.is_reversed ? (
+                                              <span className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-rose-600 dark:text-rose-400 line-through">
+                                                {t(locale, "reversedBadge")}
+                                              </span>
+                                            ) : null}
+                                          </div>
                                         </td>
                                         <td className="py-2.5 text-muted">{p.site_name}</td>
                                         <td className="py-2.5 font-mono text-muted">
-                                          {new Date(p.created_at).toLocaleTimeString(locale === "ar" ? "ar-EG" : "en-US")}
+                                          {new Date(p.actual_time ?? p.created_at).toLocaleTimeString(locale === "ar" ? "ar-EG" : "en-US")}
                                         </td>
-                                        <td className="py-2.5 font-mono text-faint">{Math.round(p.distance_meters)} m</td>
                                         <td className="py-2.5 font-mono text-faint">
-                                          {p.accuracy_meters != null ? `±${Math.round(p.accuracy_meters)} m` : "—"}
+                                          {p.is_manual ? "—" : (p.distance_meters != null ? `${Math.round(p.distance_meters)} m` : "—")}
+                                        </td>
+                                        <td className="py-2.5 font-mono text-faint">
+                                          {p.is_manual ? "—" : (p.accuracy_meters != null ? `±${Math.round(p.accuracy_meters)} m` : "—")}
                                         </td>
                                         <td className="py-2.5">
-                                          <FlagChip reason={p.flag_reason} />
+                                          {p.is_manual ? (
+                                            <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-sky-600 dark:text-sky-400">
+                                              {t(locale, "manualUnverified")}
+                                            </span>
+                                          ) : (
+                                            <FlagChip reason={p.flag_reason} />
+                                          )}
                                         </td>
                                         <td className="py-2.5 pe-4 text-end">
-                                          <Button
-                                            variant="ghost"
-                                            size="icon"
-                                            className="size-7"
-                                            onClick={() =>
-                                              setMapPunch({
-                                                lat: p.lat,
-                                                lng: p.lng,
-                                                site_name: p.site_name,
-                                                created_at: p.created_at,
-                                                type: p.type,
-                                              })
-                                            }
-                                          >
-                                            <MapPin className="size-3.5" />
-                                          </Button>
+                                          <div className="flex items-center justify-end gap-1">
+                                            {!p.is_reversed ? (
+                                              <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                className="h-7 px-2 text-[11px] text-muted hover:text-rose-600"
+                                                onClick={() => {
+                                                  setReversalPunch({
+                                                    id: p.id,
+                                                    site_name: p.site_name,
+                                                    type: p.type,
+                                                    time: new Date(p.actual_time ?? p.created_at).toLocaleTimeString(
+                                                      locale === "ar" ? "ar-EG" : "en-US"
+                                                    ),
+                                                  });
+                                                  setReversalReason("");
+                                                }}
+                                              >
+                                                {t(locale, "reversePunch")}
+                                              </Button>
+                                            ) : (
+                                              <span
+                                                className="text-[11px] text-muted italic max-w-[120px] truncate"
+                                                title={p.reversal_reason ?? ""}
+                                              >
+                                                {p.reversal_reason ?? t(locale, "reversedBadge")}
+                                              </span>
+                                            )}
+                                            {!p.is_manual && p.lat && p.lng ? (
+                                              <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="size-7"
+                                                onClick={() =>
+                                                  setMapPunch({
+                                                    lat: p.lat,
+                                                    lng: p.lng,
+                                                    site_name: p.site_name,
+                                                    created_at: p.actual_time ?? p.created_at,
+                                                    type: p.type,
+                                                  })
+                                                }
+                                              >
+                                                <MapPin className="size-3.5" />
+                                              </Button>
+                                            ) : null}
+                                          </div>
                                         </td>
                                       </tr>
                                     ))}
@@ -1232,38 +2264,79 @@ function Attendance({ locale }: { locale: Locale }) {
                                     className="rounded-lg border border-line/60 bg-surface/60 p-2.5 text-xs space-y-1.5"
                                   >
                                     <div className="flex items-center justify-between">
-                                      <span className="flex items-center gap-1.5 font-semibold text-fg">
+                                      <div className="flex items-center gap-1.5 font-semibold text-fg flex-wrap">
                                         <span className={`size-2 rounded-full ${p.type === "check_in" ? "bg-ok" : "bg-bad"}`} />
-                                        {p.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
+                                        <span>{p.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}</span>
                                         <span className="text-muted font-normal">· {p.site_name}</span>
-                                      </span>
+                                        {p.is_manual ? (
+                                          <span className="rounded bg-sky-500/20 px-1 py-0.2 text-[9px] font-semibold text-sky-600 dark:text-sky-400">
+                                            {t(locale, "manualBadge")}
+                                          </span>
+                                        ) : null}
+                                        {p.is_reversed ? (
+                                          <span className="rounded bg-rose-500/20 px-1 py-0.2 text-[9px] font-semibold text-rose-600 dark:text-rose-400 line-through">
+                                            {t(locale, "reversedBadge")}
+                                          </span>
+                                        ) : null}
+                                      </div>
                                       <span className="font-mono text-faint">
-                                        {new Date(p.created_at).toLocaleTimeString(locale === "ar" ? "ar-EG" : "en-US")}
+                                        {new Date(p.actual_time ?? p.created_at).toLocaleTimeString(locale === "ar" ? "ar-EG" : "en-US")}
                                       </span>
                                     </div>
                                     <div className="flex items-center justify-between pt-1 border-t border-line/40">
                                       <span className="font-mono text-[11px] text-faint">
-                                        {Math.round(p.distance_meters)}m
-                                        {p.accuracy_meters != null ? ` · ±${Math.round(p.accuracy_meters)}m` : ""}
+                                        {p.is_manual
+                                          ? "—"
+                                          : `${p.distance_meters != null ? `${Math.round(p.distance_meters)}m` : "—"}${
+                                              p.accuracy_meters != null ? ` · ±${Math.round(p.accuracy_meters)}m` : ""
+                                            }`}
                                       </span>
                                       <div className="flex items-center gap-1.5">
-                                        <FlagChip reason={p.flag_reason} />
-                                        <Button
-                                          variant="ghost"
-                                          size="icon"
-                                          className="size-7"
-                                          onClick={() =>
-                                            setMapPunch({
-                                              lat: p.lat,
-                                              lng: p.lng,
-                                              site_name: p.site_name,
-                                              created_at: p.created_at,
-                                              type: p.type,
-                                            })
-                                          }
-                                        >
-                                          <MapPin className="size-3.5" />
-                                        </Button>
+                                        {p.is_manual ? (
+                                          <span className="rounded bg-sky-500/10 px-1 py-0.5 text-[9px] font-semibold text-sky-600 dark:text-sky-400">
+                                            {t(locale, "manualUnverified")}
+                                          </span>
+                                        ) : (
+                                          <FlagChip reason={p.flag_reason} />
+                                        )}
+                                        {!p.is_reversed ? (
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-6 px-1.5 text-[10px] text-muted hover:text-rose-600"
+                                            onClick={() => {
+                                              setReversalPunch({
+                                                id: p.id,
+                                                site_name: p.site_name,
+                                                type: p.type,
+                                                time: new Date(p.actual_time ?? p.created_at).toLocaleTimeString(
+                                                  locale === "ar" ? "ar-EG" : "en-US"
+                                                ),
+                                              });
+                                              setReversalReason("");
+                                            }}
+                                          >
+                                            {t(locale, "reversePunch")}
+                                          </Button>
+                                        ) : null}
+                                        {!p.is_manual && p.lat && p.lng ? (
+                                          <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="size-7"
+                                            onClick={() =>
+                                              setMapPunch({
+                                                lat: p.lat,
+                                                lng: p.lng,
+                                                site_name: p.site_name,
+                                                created_at: p.actual_time ?? p.created_at,
+                                                type: p.type,
+                                              })
+                                            }
+                                          >
+                                            <MapPin className="size-3.5" />
+                                          </Button>
+                                        ) : null}
                                       </div>
                                     </div>
                                   </li>
@@ -1281,6 +2354,245 @@ function Attendance({ locale }: { locale: Locale }) {
           </div>
         )}
       </div>
+
+      {/* Manual Attendance Entry Sheet */}
+      {manualOpen ? (
+        <Sheet
+          open={manualOpen}
+          onOpenChange={(open) => {
+            if (!open) {
+              setManualOpen(false);
+              setManualStep("form");
+            }
+          }}
+          title={manualStep === "form" ? t(locale, "addManualPunch") : t(locale, "confirmManualEntryTitle")}
+        >
+          {manualStep === "form" ? (
+            <div className="grid gap-3 text-xs">
+              <div className="grid gap-1">
+                <label className="font-medium text-fg">{t(locale, "people")}</label>
+                <select
+                  className="h-10 rounded-lg border border-line bg-elevated px-2 text-xs"
+                  value={manualUserId}
+                  onChange={(e) => setManualUserId(e.target.value)}
+                >
+                  {(list.data?.rows ?? []).map((w) => (
+                    <option key={w.user_id} value={w.user_id}>
+                      {w.full_name} ({loginName(w)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid gap-1">
+                <label className="font-medium text-fg">{t(locale, "site")}</label>
+                <select
+                  className="h-10 rounded-lg border border-line bg-elevated px-2 text-xs"
+                  value={manualSiteId}
+                  onChange={(e) => setManualSiteId(Number(e.target.value))}
+                >
+                  {(sites.data?.rows ?? []).map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid gap-1">
+                <label className="font-medium text-fg">{t(locale, "eventType")}</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setManualType("check_in")}
+                    className={`flex-1 rounded-lg border py-2 text-xs font-semibold transition-colors ${
+                      manualType === "check_in" ? "border-ok bg-ok/10 text-ok" : "border-line bg-elevated text-muted"
+                    }`}
+                  >
+                    {t(locale, "checkIn")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setManualType("check_out")}
+                    className={`flex-1 rounded-lg border py-2 text-xs font-semibold transition-colors ${
+                      manualType === "check_out" ? "border-bad bg-bad/10 text-bad" : "border-line bg-elevated text-muted"
+                    }`}
+                  >
+                    {t(locale, "checkOut")}
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <label className="grid gap-1">
+                  <span className="font-medium text-fg">{t(locale, "actualDate")}</span>
+                  <input
+                    type="date"
+                    max={cairoDate()}
+                    className="h-10 rounded-lg border border-line bg-elevated px-2 text-xs"
+                    value={manualDate}
+                    onChange={(e) => setManualDate(e.target.value)}
+                  />
+                </label>
+                <label className="grid gap-1">
+                  <span className="font-medium text-fg">{t(locale, "actualTime")}</span>
+                  <input
+                    type="time"
+                    className="h-10 rounded-lg border border-line bg-elevated px-2 text-xs"
+                    value={manualTime}
+                    onChange={(e) => setManualTime(e.target.value)}
+                  />
+                </label>
+              </div>
+
+              <div className="grid gap-1">
+                <label htmlFor="manual-reason" className="font-medium text-fg">
+                  {t(locale, "reasonForRequest")}
+                </label>
+                <textarea
+                  id="manual-reason"
+                  rows={2}
+                  className="w-full rounded-lg border border-line bg-elevated px-3 py-2 text-xs text-fg placeholder:text-muted/60 focus:border-primary focus:outline-none"
+                  placeholder={t(locale, "manualPunchReasonPlaceholder")}
+                  value={manualReason}
+                  onChange={(e) => setManualReason(e.target.value)}
+                />
+              </div>
+
+              <div className="mt-2 flex gap-2">
+                <Button variant="outline" className="flex-1 text-xs" onClick={() => setManualOpen(false)}>
+                  {t(locale, "cancel")}
+                </Button>
+                <Button
+                  className="flex-1 text-xs"
+                  disabled={!manualUserId || !manualSiteId || !manualDate || !manualTime || manualReason.trim().length < 5}
+                  onClick={() => setManualStep("confirm")}
+                >
+                  {t(locale, "continue")}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-3 text-xs">
+              <p className="text-muted leading-relaxed">
+                {t(locale, "confirmManualEntryDesc")}
+              </p>
+
+              <div className="rounded-xl border border-line bg-elevated p-3 space-y-1.5">
+                <div className="flex justify-between">
+                  <span className="text-muted">{t(locale, "people")}</span>
+                  <span className="font-semibold text-fg">
+                    {(list.data?.rows ?? []).find((w) => w.user_id === manualUserId)?.full_name ?? manualUserId}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted">{t(locale, "site")}</span>
+                  <span className="font-semibold text-fg">
+                    {(sites.data?.rows ?? []).find((s) => s.id === Number(manualSiteId))?.name ?? manualSiteId}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted">{t(locale, "eventType")}</span>
+                  <span className="font-semibold text-fg">
+                    {manualType === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted">{t(locale, "actualTime")}</span>
+                  <span className="font-mono text-fg">{manualDate} {manualTime}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted">{t(locale, "reasonForRequest")}</span>
+                  <span className="text-fg italic truncate max-w-[200px]">"{manualReason}"</span>
+                </div>
+              </div>
+
+              <div className="mt-2 flex gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1 text-xs"
+                  onClick={() => setManualStep("form")}
+                  disabled={manualSubmitting}
+                >
+                  {t(locale, "prev")}
+                </Button>
+                <Button
+                  className="flex-1 text-xs"
+                  onClick={handleManualSubmit}
+                  disabled={manualSubmitting}
+                >
+                  {manualSubmitting ? t(locale, "submitting") : t(locale, "confirm")}
+                </Button>
+              </div>
+            </div>
+          )}
+        </Sheet>
+      ) : null}
+
+      {/* Reversal Confirmation Modal */}
+      {reversalPunch ? (
+        <Sheet
+          open={Boolean(reversalPunch)}
+          onOpenChange={(open) => !open && setReversalPunch(null)}
+          title={t(locale, "reversePunch")}
+        >
+          <div className="grid gap-3 text-xs">
+            <p className="text-muted leading-relaxed">
+              {t(locale, "reversalReasonPrompt")}
+            </p>
+
+            <div className="rounded-xl border border-line bg-elevated p-3 space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-muted">{t(locale, "site")}</span>
+                <span className="font-semibold text-fg">{reversalPunch.site_name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted">{t(locale, "eventType")}</span>
+                <span className="font-medium text-fg">
+                  {reversalPunch.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted">{t(locale, "colTime")}</span>
+                <span className="font-mono text-fg">{reversalPunch.time}</span>
+              </div>
+            </div>
+
+            <div className="grid gap-1">
+              <label htmlFor="reversal-reason" className="font-medium text-fg">
+                {t(locale, "reversalReasonPrompt")}
+              </label>
+              <textarea
+                id="reversal-reason"
+                rows={2}
+                className="w-full rounded-xl border border-line bg-elevated px-3 py-2 text-xs text-fg placeholder:text-muted/60 focus:border-primary focus:outline-none"
+                placeholder={t(locale, "reversalReasonPlaceholder")}
+                value={reversalReason}
+                onChange={(e) => setReversalReason(e.target.value)}
+              />
+            </div>
+
+            <div className="mt-2 flex gap-2">
+              <Button
+                variant="outline"
+                className="flex-1 text-xs"
+                onClick={() => setReversalPunch(null)}
+                disabled={reversalSubmitting}
+              >
+                {t(locale, "cancel")}
+              </Button>
+              <Button
+                variant="danger"
+                className="flex-1 text-xs"
+                onClick={handleReversalSubmit}
+                disabled={reversalSubmitting || reversalReason.trim().length < 5}
+              >
+                {reversalSubmitting ? t(locale, "submitting") : t(locale, "reversePunch")}
+              </Button>
+            </div>
+          </div>
+        </Sheet>
+      ) : null}
 
       {mapPunch ? (
         <div
@@ -1859,31 +3171,158 @@ function Skills({ locale }: { locale: Locale }) {
 
 function Reports({ locale }: { locale: Locale }) {
   const q = useQuery({ queryKey: ["htn-admin-reports"], queryFn: () => adminReports() });
+  const [statusFilter, setStatusFilter] = useState<"all" | "submitted" | "in_progress" | "resolved">("all");
+  const [previewPhoto, setPreviewPhoto] = useState<{ url: string; title: string } | null>(null);
+
   if (q.isLoading) return <Skeleton className="h-64" />;
   const rows = q.data?.rows ?? [];
-  if (!rows.length) return <Empty>{t(locale, "noReports")}</Empty>;
+
+  const submittedCount = rows.filter((r) => r.status === "submitted").length;
+  const inProgressCount = rows.filter((r) => r.status === "in_progress").length;
+  const resolvedCount = rows.filter((r) => r.status === "resolved").length;
+
+  const filteredRows = rows.filter((r) => (statusFilter === "all" ? true : r.status === statusFilter));
+
+  const priorityVariant = (p: string): "bad" | "warn" | "neutral" => {
+    if (p === "urgent") return "bad";
+    if (p === "high") return "warn";
+    return "neutral";
+  };
+
+  const priorityLabel = (p: string): string => {
+    if (p === "urgent") return t(locale, "priorityUrgent");
+    if (p === "high") return t(locale, "priorityHigh");
+    if (p === "normal") return t(locale, "priorityNormal");
+    return t(locale, "priorityLow");
+  };
+
   return (
-    <div className="grid gap-3">
-      <h1 className="font-display text-2xl font-semibold">{t(locale, "reports")}</h1>
-      {rows.map((row) => (
-        <Panel key={row.id}>
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">{row.title}</p>
-              <p className="mt-1 text-sm text-muted">{row.body}</p>
-              <p className="mt-2 font-mono text-xs text-faint">
-                {row.kind} · {row.priority} · {row.category ?? "—"} · {row.full_name} · {row.site_name ?? "—"} · {row.status}
-              </p>
-              {row.photo_data ? (
-                <img src={row.photo_data} alt="" className="mt-2 max-h-40 rounded-lg object-cover" />
-              ) : null}
-            </div>
-            <div className="flex shrink-0 flex-col gap-1">
-              {row.status === "submitted" || row.status === "in_progress" ? (
-                <>
+    <div className="grid gap-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="font-display text-2xl font-semibold text-fg">{t(locale, "reports")}</h1>
+          <p className="font-mono text-xs text-muted">
+            {submittedCount} {t(locale, "submittedReports").toLowerCase()} · {rows.length} total
+          </p>
+        </div>
+        {submittedCount > 0 ? (
+          <StatusChip size="sm" variant="warn">
+            {submittedCount} {t(locale, "attentionNeeded")}
+          </StatusChip>
+        ) : null}
+      </div>
+
+      {/* Status Filter Tabs */}
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-line pb-3">
+        <button
+          type="button"
+          onClick={() => setStatusFilter("all")}
+          className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+            statusFilter === "all"
+              ? "bg-primary text-primary-fg shadow-xs"
+              : "bg-surface text-muted hover:bg-elevated hover:text-fg border border-line/60"
+          }`}
+        >
+          <span>{t(locale, "allReports")}</span>
+          <span className="font-mono font-bold">{rows.length}</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setStatusFilter("submitted")}
+          className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+            statusFilter === "submitted"
+              ? "bg-primary text-primary-fg shadow-xs"
+              : "bg-surface text-muted hover:bg-elevated hover:text-fg border border-line/60"
+          }`}
+        >
+          <span>{t(locale, "submittedReports")}</span>
+          {submittedCount > 0 ? (
+            <span className="rounded-full bg-warn/20 px-1.5 font-mono text-[10px] font-bold text-warn">
+              {submittedCount}
+            </span>
+          ) : (
+            <span className="font-mono text-[10px]">0</span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setStatusFilter("in_progress")}
+          className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+            statusFilter === "in_progress"
+              ? "bg-primary text-primary-fg shadow-xs"
+              : "bg-surface text-muted hover:bg-elevated hover:text-fg border border-line/60"
+          }`}
+        >
+          <span>{t(locale, "inProgressReports")}</span>
+          <span className="font-mono text-[10px]">{inProgressCount}</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setStatusFilter("resolved")}
+          className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+            statusFilter === "resolved"
+              ? "bg-primary text-primary-fg shadow-xs"
+              : "bg-surface text-muted hover:bg-elevated hover:text-fg border border-line/60"
+          }`}
+        >
+          <span>{t(locale, "resolvedReports")}</span>
+          <span className="font-mono text-[10px]">{resolvedCount}</span>
+        </button>
+      </div>
+
+      {filteredRows.length === 0 ? (
+        <Empty>{t(locale, "noReports")}</Empty>
+      ) : (
+        <div className="grid gap-3">
+          {filteredRows.map((row) => (
+            <Panel key={row.id} className="space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                <div className="min-w-0 space-y-1.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-sm text-fg">{row.title}</span>
+                    <StatusChip size="sm" variant={priorityVariant(row.priority)}>
+                      {priorityLabel(row.priority)}
+                    </StatusChip>
+                    <span className="rounded bg-elevated px-2 py-0.5 font-mono text-[10px] font-semibold text-muted uppercase">
+                      {row.kind}
+                    </span>
+                    {row.category ? (
+                      <span className="rounded bg-elevated px-2 py-0.5 text-[10px] text-muted">
+                        {row.category}
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <p className="text-xs text-muted leading-relaxed break-words">{row.body}</p>
+
+                  <div className="flex items-center gap-2 text-xs font-mono text-faint flex-wrap">
+                    <span className="text-fg font-medium">{row.full_name}</span>
+                    <span>·</span>
+                    <span>{row.site_name ?? "—"}</span>
+                    <span>·</span>
+                    <span>{new Date(row.created_at).toLocaleString(locale === "ar" ? "ar-EG" : "en-US")}</span>
+                  </div>
+
+                  {row.photo_data ? (
+                    <button
+                      type="button"
+                      onClick={() => setPreviewPhoto({ url: row.photo_data!, title: row.title })}
+                      className="mt-1 block overflow-hidden rounded-lg border border-line hover:opacity-90 transition-opacity"
+                    >
+                      <img src={row.photo_data} alt="" className="max-h-36 w-auto object-cover rounded-lg" />
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className="flex shrink-0 flex-row sm:flex-col gap-1.5 self-end sm:self-start">
                   {row.status === "submitted" ? (
                     <Button
                       variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
                       onClick={async () => {
                         await reviewReport({ data: { id: row.id, status: "in_progress" } });
                         void q.refetch();
@@ -1892,21 +3331,53 @@ function Reports({ locale }: { locale: Locale }) {
                       {t(locale, "inProgress")}
                     </Button>
                   ) : null}
-                  <Button
-                    variant="outline"
-                    onClick={async () => {
-                      await reviewReport({ data: { id: row.id, status: "resolved" } });
-                      void q.refetch();
-                    }}
-                  >
-                    {t(locale, "resolved")}
-                  </Button>
-                </>
-              ) : null}
-            </div>
+                  {row.status === "submitted" || row.status === "in_progress" ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs font-semibold"
+                      onClick={async () => {
+                        await reviewReport({ data: { id: row.id, status: "resolved" } });
+                        void q.refetch();
+                      }}
+                    >
+                      {t(locale, "resolved")}
+                    </Button>
+                  ) : (
+                    <StatusChip size="sm" variant="ok">
+                      {t(locale, "resolved")}
+                    </StatusChip>
+                  )}
+                </div>
+              </div>
+            </Panel>
+          ))}
+        </div>
+      )}
+
+      {/* Photo Preview Sheet */}
+      {previewPhoto ? (
+        <Sheet
+          open={Boolean(previewPhoto)}
+          onOpenChange={(open) => !open && setPreviewPhoto(null)}
+          title={previewPhoto.title}
+        >
+          <div className="grid gap-3">
+            <img
+              src={previewPhoto.url}
+              alt={previewPhoto.title}
+              className="w-full rounded-xl object-contain max-h-[70vh] border border-line"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPreviewPhoto(null)}
+            >
+              {t(locale, "cancel")}
+            </Button>
           </div>
-        </Panel>
-      ))}
+        </Sheet>
+      ) : null}
     </div>
   );
 }
@@ -1930,11 +3401,25 @@ function LeaveDesk({ locale }: { locale: Locale }) {
                 {row.start_date} → {row.end_date}
               </p>
               {row.reason ? <p className="mt-1 text-sm text-muted">{row.reason}</p> : null}
-              <p className="mt-2 font-mono text-xs text-faint">{row.status}</p>
+              <div className="mt-2">
+                <StatusChip
+                  size="sm"
+                  variant={
+                    row.status === "approved"
+                      ? "ok"
+                      : row.status === "denied"
+                      ? "bad"
+                      : "warn"
+                  }
+                >
+                  {row.status}
+                </StatusChip>
+              </div>
             </div>
             {row.status === "pending" ? (
               <div className="flex gap-2">
                 <Button
+                  size="sm"
                   onClick={async () => {
                     await reviewLeave({ data: { id: row.id, status: "approved" } });
                     void q.refetch();
@@ -1943,6 +3428,7 @@ function LeaveDesk({ locale }: { locale: Locale }) {
                   {t(locale, "approve")}
                 </Button>
                 <Button
+                  size="sm"
                   variant="outline"
                   onClick={async () => {
                     await reviewLeave({ data: { id: row.id, status: "denied" } });

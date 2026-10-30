@@ -13,11 +13,13 @@ export type PunchRow = {
   flag_reason: string | null;
   auto_closed: boolean;
   at_ms: number;
+  source?: string;
+  is_manual?: boolean;
 };
 
 export type LeaveRow = { user_id: string; kind: string };
 
-export type Verdict = "verified" | "low_accuracy" | "outside" | "flagged";
+export type Verdict = "verified" | "low_accuracy" | "outside" | "flagged" | "manual";
 
 export type PresentRow = {
   userId: string;
@@ -47,7 +49,13 @@ export type DailyReport = {
 
 const HARD_FLAGS = new Set(["device_mismatch", "mock_location", "impossible_travel"]);
 
-export function verdictFor(p: Pick<PunchRow, "status" | "accuracy_meters" | "flag_reason">): Verdict {
+export function verdictFor(
+  p: Pick<PunchRow, "status" | "accuracy_meters" | "flag_reason"> & {
+    is_manual?: boolean;
+    source?: string;
+  },
+): Verdict {
+  if (p.is_manual || p.source === "manual") return "manual";
   if (p.flag_reason && HARD_FLAGS.has(p.flag_reason)) return "flagged";
   const lowAcc =
     p.flag_reason === "low_accuracy" ||
@@ -151,6 +159,7 @@ const VERDICT_LABEL: Record<Verdict, string> = {
   low_accuracy: "Low GPS accuracy — review",
   outside: "Outside site",
   flagged: "Flagged — review",
+  manual: "Manual (Admin Entry)",
 };
 
 function weekdayName(date: string) {

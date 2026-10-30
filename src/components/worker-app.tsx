@@ -1,4 +1,4 @@
-import { Calendar, Clock, FileText, Home, MapPin, MapPinOff, Palmtree, User } from "lucide-react";
+import { Calendar, Clock, FileText, Home, Info, MapPin, MapPinOff, Palmtree, Phone, User } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -17,11 +17,13 @@ import {
   loadTeamPunches,
   markNotificationsRead,
   refreshHome,
+  submitAttendanceRequest,
   submitReport,
   updateProfile,
   type HomeData,
   type TimelineEvent,
 } from "@/lib/server/field";
+import type { AttendanceRequestRow } from "@/lib/server/types";
 import { answerSurvey, loadAnnouncements, loadSurveys } from "@/lib/server/comms";
 import { myLeave, requestLeave } from "@/lib/server/leave";
 import { HoursHeat } from "./hours-heat";
@@ -33,6 +35,7 @@ import { LocationStatusCard, evaluateGpsAdvisory } from "./worker/location-statu
 import { PrimaryPunchControl } from "./worker/primary-punch-control";
 import { ShiftSummaryCard } from "./worker/shift-summary-card";
 import { DeviceStatusBanner, NetworkTimeoutAlert } from "./worker/device-status-banner";
+import { Sheet } from "@/components/ui/sheet";
 
 type Tab = "home" | "history" | "jobs" | "reports" | "me";
 
@@ -174,62 +177,116 @@ function HomeTab({
     mock: boolean;
     altitude: number | null;
     speed: number | null;
+    gpsFixAt: string;
   } | null>(null);
+  const [isRefining, setIsRefining] = useState(false);
   const [locErr, setLocErr] = useState<"denied" | "unavailable" | "timeout" | "unsupported" | null>(null);
   // "unknown" while we're still asking the browser; "prompt" means we haven't
   // asked the user yet and must wait for a real tap (see requestLocation
   // below); "granted"/"denied" mirror the Permissions API's PermissionState.
   const [permState, setPermState] = useState<"unknown" | "granted" | "prompt" | "denied">("unknown");
   const watchIdRef = useRef<number | null>(null);
+  const refinementTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bestPosRef = useRef<{
+    lat: number;
+    lng: number;
+    accuracy: number;
+    mock: boolean;
+    altitude: number | null;
+    speed: number | null;
+    gpsFixAt: string;
+  } | null>(null);
   const [siteId, setSiteId] = useState<number | null>(home.todayAssign[0]?.site_id ?? home.sites[0]?.id ?? null);
   const [offline, setOffline] = useState(typeof navigator !== "undefined" ? queuedCount() : 0);
   const pickedSite = useRef(false);
   const didAutoExpand = useRef(false);
 
+  // Review request modal state
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewReason, setReviewReason] = useState("");
+  const [submittingReview, setSubmittingReview] = useState(false);
+
   const onPosition = (p: GeolocationPosition) => {
+    // Drop excessively stale cached readings (older than 10 seconds)
+    const ageMs = Date.now() - p.timestamp;
+    if (ageMs > 10_000) return;
+
     const coords = p.coords as GeolocationCoordinates & { mock?: boolean; isFromMockProvider?: boolean };
-    setPos({
+    const reading = {
       lat: coords.latitude,
       lng: coords.longitude,
       accuracy: coords.accuracy,
       mock: Boolean(coords.mock || coords.isFromMockProvider),
       altitude: coords.altitude,
       speed: coords.speed,
-    });
+      gpsFixAt: new Date(p.timestamp).toISOString(),
+    };
+
+    // Keep best reading acquired so far during this refinement window
+    if (!bestPosRef.current || reading.accuracy <= bestPosRef.current.accuracy) {
+      bestPosRef.current = reading;
+      setPos(reading);
+    }
+
     setLocErr(null);
     setPermState("granted");
+
+    // If reading already reaches high-confidence threshold (<= 25m), finish refinement early
+    if (reading.accuracy <= 25) {
+      if (refinementTimerRef.current) {
+        clearTimeout(refinementTimerRef.current);
+        refinementTimerRef.current = null;
+      }
+      setIsRefining(false);
+    }
   };
 
   const onPositionError = (err: GeolocationPositionError) => {
     if (err.code === err.PERMISSION_DENIED) {
       setLocErr("denied");
       setPermState("denied");
+      setIsRefining(false);
+      if (refinementTimerRef.current) clearTimeout(refinementTimerRef.current);
     } else if (err.code === err.POSITION_UNAVAILABLE) {
-      setLocErr("unavailable");
-    } else {
-      setLocErr("timeout");
+      if (!bestPosRef.current && !isRefining) setLocErr("unavailable");
     }
   };
 
-  const startWatch = () => {
-    if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current);
+  const stopWatch = () => {
+    if (refinementTimerRef.current) {
+      clearTimeout(refinementTimerRef.current);
+      refinementTimerRef.current = null;
+    }
+    if (watchIdRef.current != null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+  };
+
+  const startRefinement = () => {
+    stopWatch();
+    setIsRefining(true);
+    setLocErr(null);
+
+    // 20-second bounded refinement window: gives older phone GPS chipsets time to lock satellites
+    refinementTimerRef.current = setTimeout(() => {
+      setIsRefining(false);
+      if (!bestPosRef.current) {
+        setLocErr("timeout");
+      }
+    }, 20_000);
+
     watchIdRef.current = navigator.geolocation.watchPosition(onPosition, onPositionError, {
       enableHighAccuracy: true,
-      maximumAge: 4000,
-      timeout: 12000,
+      maximumAge: 0, // Force fresh hardware reading
+      timeout: 10_000,
     });
   };
 
-  // Called from a real tap (the "Enable location" button, or the "I've
-  // allowed it, check again" button after a denial). A direct user gesture
-  // is what makes mobile browsers reliably show the native permission
-  // prompt at all - firing getCurrentPosition/watchPosition automatically on
-  // mount, with no gesture behind it, is exactly what causes some phones to
-  // silently fail or re-ask every single time instead of remembering the
-  // choice.
   const requestLocation = () => {
     setLocErr(null);
-    startWatch();
+    bestPosRef.current = null;
+    startRefinement();
   };
 
   useEffect(() => {
@@ -238,9 +295,7 @@ function HomeTab({
       return;
     }
     if (!navigator.permissions?.query) {
-      // Permissions API not available (older Safari, some WebViews) - fall
-      // back to the old behavior of just asking directly.
-      startWatch();
+      startRefinement();
       return;
     }
     let status: PermissionStatus | null = null;
@@ -249,20 +304,20 @@ function HomeTab({
       .then((result) => {
         status = result;
         setPermState(result.state);
-        if (result.state === "granted") startWatch();
-        // "prompt": don't call watchPosition yet - wait for the Enable
-        // Location button so the request is tied to a tap.
-        // "denied": nothing to do here, the guidance UI below handles it.
+        if (result.state === "granted") startRefinement();
         result.onchange = () => {
           setPermState(result.state);
-          if (result.state === "granted") startWatch();
-          if (result.state === "denied") setLocErr("denied");
+          if (result.state === "granted") startRefinement();
+          if (result.state === "denied") {
+            setLocErr("denied");
+            setIsRefining(false);
+          }
         };
       })
-      .catch(() => startWatch());
+      .catch(() => startRefinement());
     return () => {
       if (status) status.onchange = null;
-      if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current);
+      stopWatch();
     };
   }, []);
 
@@ -404,6 +459,7 @@ function HomeTab({
         altitude: pos.altitude,
         speed: pos.speed,
         mock: pos.mock,
+        gpsFixAt: pos.gpsFixAt,
         deviceId: proof.deviceId,
         devicePublicKey: proof.devicePublicKey,
         deviceSignature: proof.deviceSignature,
@@ -467,13 +523,59 @@ function HomeTab({
   const assignment = home.todayAssign[0];
   const deviceApproved = home.me.device_approved;
 
-  // Active advisory state including permission checks
+  // Active advisory state including permission checks and progressive refinement
   const effectiveGpsState =
     locErr === "denied"
       ? "permission_denied"
+      : locErr === "timeout" && !pos
+      ? "timeout"
+      : isRefining && (!pos || pos.accuracy > 25)
+      ? "refining"
       : !pos || locErr === "timeout" || locErr === "unavailable"
       ? "locating"
       : gpsAdvisory.state;
+
+  const handleReviewSubmit = async () => {
+    if (!site) return;
+    const reason = reviewReason.trim();
+    if (reason.length < 5) {
+      toast.error(t(locale, "reviewReasonRequired"));
+      return;
+    }
+    setSubmittingReview(true);
+    try {
+      const eventId = clientEventId();
+      const deviceId = await getDeviceId();
+      const proof = await signDeviceProof(`review:${deviceId}:${eventId}:${site.id}`);
+      await submitAttendanceRequest({
+        data: {
+          siteId: site.id,
+          type: home.isCheckedIn ? "check_out" : "check_in",
+          lat: pos?.lat ?? null,
+          lng: pos?.lng ?? null,
+          accuracy: pos?.accuracy ?? null,
+          distanceMeters: dist != null ? Math.round(dist) : null,
+          advisoryState: effectiveGpsState,
+          reason,
+          deviceId: proof.deviceId,
+          deviceSignature: proof.deviceSignature,
+          devicePublicKey: proof.devicePublicKey,
+          clientEventId: eventId,
+          gpsFixAt: pos?.gpsFixAt ?? null,
+        },
+      });
+      toast.success(t(locale, "reviewRequestSubmitted"));
+      setReviewReason("");
+      setReviewOpen(false);
+      const updated = await refreshHome();
+      onHome(updated);
+      qc.setQueryData(["htn-home"], updated);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to submit review request");
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
 
   return (
     <div className="grid gap-3.5 pb-2">
@@ -496,6 +598,34 @@ function HomeTab({
         <p className="rounded-lg border border-warn/40 bg-surface px-3 py-2 text-xs text-warn">
           {t(locale, "offlineQueue")} · {offline}
         </p>
+      ) : null}
+
+      {/* Pending Attendance Review Requests Banner */}
+      {home.pendingRequests && home.pendingRequests.length > 0 ? (
+        <div className="grid gap-2">
+          {home.pendingRequests.map((req: AttendanceRequestRow) => (
+            <div
+              key={req.id}
+              className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-fg"
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-amber-600 dark:text-amber-400">
+                  {t(locale, "attendanceRequests")} · {req.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")}
+                </span>
+                <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-mono font-medium text-amber-600 dark:text-amber-400">
+                  {t(locale, "pendingReview")}
+                </span>
+              </div>
+              <div className="mt-1 text-muted">
+                <span>{req.site_name}</span> ·{" "}
+                <span className="font-mono">
+                  {new Date(req.attempted_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              </div>
+              <p className="mt-1 rounded bg-surface/60 p-1.5 text-muted italic">"{req.reason}"</p>
+            </div>
+          ))}
+        </div>
       ) : null}
 
       <PushNudge locale={locale} />
@@ -552,6 +682,8 @@ function HomeTab({
           accuracy={pos?.accuracy ?? null}
           distanceToBoundary={gpsAdvisory.distanceToBoundary}
           distanceFromCenter={dist != null ? Math.round(dist) : null}
+          onRetryGps={startRefinement}
+          onRequestReview={() => setReviewOpen(true)}
         />
       )}
 
@@ -615,7 +747,7 @@ function HomeTab({
         locale={locale}
         isCheckedIn={home.isCheckedIn}
         isPending={punch.isPending}
-        disabled={!pos || !inside || !deviceApproved || unconfirmedNetwork || !gpsAdvisory.canPunch}
+        disabled={!pos || !inside || !deviceApproved || unconfirmedNetwork || !gpsAdvisory.canPunch || isRefining}
         advisoryState={effectiveGpsState}
         onPunch={() => punch.mutate()}
       />
@@ -676,7 +808,7 @@ function HomeTab({
                 </div>
                 <div className="shrink-0 text-end">
                   <p className="font-mono text-xs text-muted">
-                    {new Date(row.created_at).toLocaleTimeString()}
+                    {new Date(row.actual_time ?? row.created_at).toLocaleTimeString()}
                   </p>
                   <p className="font-mono text-xs text-faint">{Math.round(row.distance_meters)} m</p>
                 </div>
@@ -685,6 +817,70 @@ function HomeTab({
           </ul>
         )}
       </section>
+
+      {/* Attendance Review Request Sheet */}
+      <Sheet
+        open={reviewOpen}
+        onOpenChange={setReviewOpen}
+        title={t(locale, "requestAttendanceReview")}
+      >
+        <div className="grid gap-3 text-xs">
+          <p className="text-muted leading-relaxed">
+            {t(locale, "requestAttendanceReviewDesc")}
+          </p>
+
+          <div className="rounded-xl border border-line bg-elevated p-3 space-y-1.5">
+            <div className="flex justify-between">
+              <span className="text-muted">{t(locale, "eventType")}</span>
+              <span className="font-medium text-fg">
+                {home.isCheckedIn ? t(locale, "checkOut") : t(locale, "checkIn")}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted">{t(locale, "site")}</span>
+              <span className="font-medium text-fg">{site?.name ?? "—"}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted">{t(locale, "currentGpsAccuracy")}</span>
+              <span className="font-mono text-fg">{pos?.accuracy ? `${Math.round(pos.accuracy)}m` : "—"}</span>
+            </div>
+          </div>
+
+          <div className="grid gap-1">
+            <label htmlFor="review-reason" className="font-medium text-fg">
+              {t(locale, "reasonForRequest")}
+            </label>
+            <textarea
+              id="review-reason"
+              rows={3}
+              className="w-full rounded-xl border border-line bg-elevated px-3 py-2 text-xs text-fg placeholder:text-muted/60 focus:border-primary focus:outline-none"
+              placeholder={t(locale, "reviewReasonPlaceholder")}
+              value={reviewReason}
+              onChange={(e) => setReviewReason(e.target.value)}
+            />
+          </div>
+
+          <div className="mt-2 flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="flex-1 text-xs"
+              onClick={() => setReviewOpen(false)}
+              disabled={submittingReview}
+            >
+              {t(locale, "cancel")}
+            </Button>
+            <Button
+              type="button"
+              className="flex-1 text-xs"
+              onClick={handleReviewSubmit}
+              disabled={submittingReview || reviewReason.trim().length < 5}
+            >
+              {submittingReview ? t(locale, "submitting") : t(locale, "submitReviewRequest")}
+            </Button>
+          </div>
+        </div>
+      </Sheet>
     </div>
   );
 }
@@ -725,13 +921,25 @@ function HistoryTab({ locale }: { locale: Locale }) {
           {rows.map((row) => (
             <li key={row.id} className="rounded-xl border border-line bg-surface px-3 py-2.5">
               <div className="flex items-center justify-between">
-                <p className="text-sm font-medium">
-                  {row.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")} · {row.site_name}
-                </p>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <p className="text-sm font-medium">
+                    {row.type === "check_in" ? t(locale, "checkIn") : t(locale, "checkOut")} · {row.site_name}
+                  </p>
+                  {row.is_manual ? (
+                    <span className="rounded bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-400">
+                      {t(locale, "manualAttendance")}
+                    </span>
+                  ) : null}
+                  {row.is_reversed ? (
+                    <span className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-medium text-rose-600 dark:text-rose-400">
+                      {t(locale, "reversed")}
+                    </span>
+                  ) : null}
+                </div>
                 <FlagChip reason={row.flag_reason} />
               </div>
               <p className="mt-1 font-mono text-xs text-faint">
-                {new Date(row.created_at).toLocaleString()} · {Math.round(row.distance_meters)} m · {row.status}
+                {new Date(row.actual_time ?? row.created_at).toLocaleString()} · {Math.round(row.distance_meters)} m · {row.status}
               </p>
             </li>
           ))}
@@ -766,29 +974,63 @@ function JobsTab({ locale }: { locale: Locale }) {
       <LeavePanel locale={locale} />
       {q.isLoading ? <Skeleton className="h-32" /> : null}
       {!q.isLoading && !rows.length ? <Empty>{t(locale, "noJobs")}</Empty> : null}
-      <ul className="grid gap-2">
+      <ul className="grid gap-3">
         {rows.map((row) => (
-          <li key={row.id} className="rounded-xl border border-line bg-surface p-4">
-            <p className="flex items-center gap-2 font-display text-base font-semibold">
-              <MapPin className="size-4 text-muted" />
-              {row.site_name}
-            </p>
-            {row.task ? <p className="mt-1 text-sm text-muted">{row.task}</p> : null}
-            <p className="mt-2 font-mono text-xs text-faint">
-              {row.start_date} → {row.end_date}
-            </p>
+          <li key={row.id} className="rounded-xl border border-line bg-surface p-4 shadow-xs">
+            <div className="flex items-start justify-between gap-2">
+              <p className="flex items-center gap-2 font-display text-base font-semibold">
+                <MapPin className="size-4 text-accent" />
+                {row.site_name}
+              </p>
+              <span className="font-mono text-xs text-muted">
+                {row.start_date} → {row.end_date}
+              </span>
+            </div>
+            {row.task ? (
+              <div className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-elevated px-2.5 py-1 text-xs font-medium text-fg">
+                <span className="text-muted">{t(locale, "task")}:</span>
+                <span>{row.task}</span>
+              </div>
+            ) : null}
+            {row.notes ? (
+              <div className="mt-2.5 rounded-lg border border-line bg-elevated/60 p-2.5 text-xs text-muted">
+                <p className="font-medium text-fg flex items-center gap-1 mb-1">
+                  <Info className="size-3.5 text-accent" />
+                  {t(locale, "instructions")}
+                </p>
+                <p className="leading-relaxed">{row.notes}</p>
+              </div>
+            ) : null}
           </li>
         ))}
       </ul>
       <Panel>
-        <Kicker>{t(locale, "teammates")}</Kicker>
+        <Kicker>{t(locale, "teamMembers")}</Kicker>
         {mates.length === 0 ? (
           <p className="text-sm text-muted">{t(locale, "noTeammates")}</p>
         ) : (
-          <ul className="grid gap-1 text-sm">
+          <ul className="grid gap-2 text-sm mt-1">
             {mates.map((m) => (
-              <li key={`${m.full_name}-${m.site_name}`}>
-                {m.full_name} <span className="text-muted">· {m.site_name}</span>
+              <li
+                key={`${m.full_name}-${m.site_name}`}
+                className="flex items-center justify-between rounded-lg border border-line bg-surface px-3 py-2"
+              >
+                <div>
+                  <p className="font-medium text-fg">{m.full_name}</p>
+                  <p className="text-xs text-muted">
+                    {m.title || "Technician"} · {m.site_name}
+                    {m.task ? ` · ${m.task}` : ""}
+                  </p>
+                </div>
+                {m.phone ? (
+                  <a
+                    href={`tel:${m.phone}`}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-elevated text-accent hover:bg-line"
+                    title={m.phone}
+                  >
+                    <Phone className="size-3.5" />
+                  </a>
+                ) : null}
               </li>
             ))}
           </ul>
