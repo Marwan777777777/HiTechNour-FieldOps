@@ -522,13 +522,14 @@ describe("Phase 2.2.1: Attendance Reliability & Admin Manual Attendance", () => 
         if (!site) throw new Error("SITE_NOT_FOUND");
         if (!site.active) throw new Error("SITE_INACTIVE");
 
-        // Duplicate punch (< 60s)
+        // Duplicate punch (< 60s) for same punch type
         const dupRes = await tx.query(`
           select id from checkins
           where user_id = $1
             and is_reversed = false
-            and abs(extract(epoch from (actual_time - $2::timestamptz))) < 60
-          limit 1`, [data.userId, at.toISOString()]);
+            and type = $2
+            and abs(extract(epoch from (actual_time - $3::timestamptz))) < 60
+          limit 1`, [data.userId, data.type, at.toISOString()]);
         if (dupRes.rows[0]) throw new Error("DUPLICATE_PUNCH: An active attendance punch already exists within 1 minute of this time.");
 
         // Validate sequence around timestamp
@@ -560,7 +561,7 @@ describe("Phase 2.2.1: Attendance Reliability & Admin Manual Attendance", () => 
           }
         } else {
           // check_out
-          if (!prev || prev.type !== "check_in") {
+          if (!prev || prev.type !== "check_in" || atMs <= new Date(prev.actual_time).getTime()) {
             throw new Error("NOT_CHECKED_IN: Cannot place check-out without a preceding open check-in.");
           }
           const hrs = (atMs - new Date(prev.actual_time).getTime()) / 3600000;
@@ -1036,6 +1037,53 @@ describe("Phase 2.2.1: Attendance Reliability & Admin Manual Attendance", () => 
       // Verify yesterday's hours calculate to 8.0
       const yestHours = await calculatePayableHours(pg, "worker_1", "2026-10-29", "2026-10-30");
       assert.equal(yestHours, 8.0);
+    });
+
+    it("11. Check-out shortly after check-in within 60s succeeds, but same-type duplicate within 60s throws DUPLICATE_PUNCH", async () => {
+      const pg = await setupDb();
+      await serverCreateManualAttendance(pg, "admin_1", {
+        userId: "worker_1",
+        siteId: 1,
+        type: "check_in",
+        actualTime: "2026-10-30T08:00:00.000Z",
+        reason: "Manual checkin at 08:00:00",
+      });
+
+      // Same-type punch within 60s is rejected with DUPLICATE_PUNCH
+      await assert.rejects(
+        () =>
+          serverCreateManualAttendance(pg, "admin_1", {
+            userId: "worker_1",
+            siteId: 1,
+            type: "check_in",
+            actualTime: "2026-10-30T08:00:30.000Z",
+            reason: "Duplicate manual checkin at 08:00:30",
+          }),
+        /DUPLICATE_PUNCH/
+      );
+
+      // Check-out 15 seconds after check-in is permitted (not blocked by DUPLICATE_PUNCH)
+      const out = await serverCreateManualAttendance(pg, "admin_1", {
+        userId: "worker_1",
+        siteId: 1,
+        type: "check_out",
+        actualTime: "2026-10-30T08:00:15.000Z",
+        reason: "Immediate departure 15s later",
+      });
+      assert.ok(out.id);
+
+      // Duplicate check-out within 60s is rejected with DUPLICATE_PUNCH
+      await assert.rejects(
+        () =>
+          serverCreateManualAttendance(pg, "admin_1", {
+            userId: "worker_1",
+            siteId: 1,
+            type: "check_out",
+            actualTime: "2026-10-30T08:00:45.000Z",
+            reason: "Duplicate checkout within 60s",
+          }),
+        /DUPLICATE_PUNCH/
+      );
     });
   });
 

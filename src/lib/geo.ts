@@ -110,6 +110,38 @@ export function cairoDate(at = new Date()): string {
   }).format(at);
 }
 
+export function cairoParts(ms: number) {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "Africa/Cairo",
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    })
+      .formatToParts(ms)
+      .map((x) => [x.type, x.value]),
+  );
+  return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+}
+
+export function cairoToIso(date: string, time: string): string {
+  const asUtc = Date.parse(`${date}T${time}:00Z`);
+  return new Date(asUtc - (cairoParts(asUtc) - asUtc)).toISOString();
+}
+
+export function cairoTimeStr(at = new Date()): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Africa/Cairo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(at);
+}
+
 export const LATE_CUTOFF_HOUR = 11;
 export const LATE_CUTOFF_MINUTE = 0;
 

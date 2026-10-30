@@ -10,6 +10,7 @@ export async function loadTodayPunches(sql: Sql, today: string) {
     status: string;
     created_at: string;
     actual_time?: string;
+    site_id: number;
     site_name: string;
     is_manual: boolean;
     source: string;
@@ -20,7 +21,7 @@ export async function loadTodayPunches(sql: Sql, today: string) {
       where is_reversed = false
       order by user_id, actual_time desc, id desc
     )
-    select c.id, p.user_id, p.full_name, c.type, c.distance_meters, c.status,
+    select c.id, c.site_id, p.user_id, p.full_name, c.type, c.distance_meters, c.status,
            c.created_at::text as created_at, c.actual_time::text as actual_time, s.name as site_name,
            c.is_manual, c.source
     from checkins c

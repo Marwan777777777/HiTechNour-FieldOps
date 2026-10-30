@@ -1212,11 +1212,12 @@ export async function executeCreateManualAttendance(
     if (!site) throw new Error("SITE_NOT_FOUND");
     if (!site.active) throw new Error("SITE_INACTIVE: Cannot record attendance for inactive site.");
 
-    // 3. Prevent duplicate active timestamps within 60 seconds
+    // 3. Prevent duplicate active timestamps within 60 seconds of the same punch type
     const dup = await tx<{ id: number }>`
       select id from checkins
       where user_id = ${data.userId}
         and is_reversed = false
+        and type = ${data.type}
         and abs(extract(epoch from (actual_time - ${at.toISOString()}::timestamptz))) < 60
       limit 1`;
     if (dup[0]) {
@@ -1257,12 +1258,12 @@ export async function executeCreateManualAttendance(
       }
     } else {
       // check_out
-      if (!prev || prev.type !== "check_in") {
+      if (!prev || prev.type !== "check_in" || atMs <= new Date(prev.actual_time).getTime()) {
         throw new Error("NOT_CHECKED_IN: Cannot place check-out without a preceding open check-in.");
       }
       const hoursSincePrev = (atMs - new Date(prev.actual_time).getTime()) / 3_600_000;
       if (hoursSincePrev >= STALE_SHIFT_HOURS) {
-        throw new Error("STALE_SHIFT: Preceding check-in is more than 16 hours old.");
+        throw new Error(`STALE_SHIFT: Preceding check-in is more than ${STALE_SHIFT_HOURS} hours old.`);
       }
       if (next && next.type === "check_out") {
         const hoursUntilNext = (new Date(next.actual_time).getTime() - atMs) / 3_600_000;

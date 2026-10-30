@@ -23,7 +23,7 @@ import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recha
 import { Button } from "@/components/ui/button";
 import { Empty, FlagChip, Kicker, Panel, Stat, BrandMark } from "@/components/chrome";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cairoDate, needsMapsExpand, parseGoogleMapsUrl } from "@/lib/geo";
+import { cairoDate, cairoTimeStr, cairoToIso, needsMapsExpand, parseGoogleMapsUrl } from "@/lib/geo";
 import { type Locale, type Msg, t } from "@/lib/i18n";
 import {
   activityLog,
@@ -1779,7 +1779,7 @@ function Attendance({ locale }: { locale: Locale }) {
   const [manualSiteId, setManualSiteId] = useState<number | "">("");
   const [manualType, setManualType] = useState<"check_in" | "check_out">("check_in");
   const [manualDate, setManualDate] = useState(cairoDate());
-  const [manualTime, setManualTime] = useState("09:00");
+  const [manualTime, setManualTime] = useState(() => cairoTimeStr());
   const [manualReason, setManualReason] = useState("");
   const [manualSubmitting, setManualSubmitting] = useState(false);
 
@@ -1792,6 +1792,11 @@ function Attendance({ locale }: { locale: Locale }) {
   } | null>(null);
   const [reversalReason, setReversalReason] = useState("");
   const [reversalSubmitting, setReversalSubmitting] = useState(false);
+
+  const overview = useQuery({
+    queryKey: ["htn-overview"],
+    queryFn: () => adminOverview(),
+  });
 
   const list = useQuery({
     queryKey: ["htn-workers", q],
@@ -1809,15 +1814,48 @@ function Attendance({ locale }: { locale: Locale }) {
     enabled: Boolean(selected),
   });
 
-  const openManualEntry = (prefillUserId?: string) => {
-    setManualUserId(prefillUserId ?? selected?.id ?? list.data?.rows[0]?.user_id ?? "");
-    setManualSiteId(sites.data?.rows[0]?.id ?? "");
+  const applyWorkerDefaults = (uid: string) => {
+    // 1. Check overview todayPunches (loaded via loadTodayPunches, which includes today's punches and open shifts)
+    const latestToday = overview.data?.todayPunches?.find((p) => p.user_id === uid);
+    if (latestToday) {
+      setManualType(latestToday.type === "check_in" ? "check_out" : "check_in");
+      if ("site_id" in latestToday && latestToday.site_id) {
+        setManualSiteId(latestToday.site_id as number);
+      } else if (latestToday.site_name) {
+        const matchingSite = sites.data?.rows?.find((s) => s.name === latestToday.site_name);
+        if (matchingSite) setManualSiteId(matchingSite.id);
+      }
+      return;
+    }
+
+    // 2. Fallback: check selected worker history if this worker is selected
+    if (selected?.id === uid && history.data?.days?.length) {
+      for (const d of history.data.days) {
+        const nonReversed = d.punches.filter((p) => !p.is_reversed);
+        if (nonReversed.length > 0) {
+          const last = nonReversed[nonReversed.length - 1];
+          if (last.type === "check_in") {
+            setManualType("check_out");
+            const matchingSite = sites.data?.rows?.find((s) => s.name === last.site_name);
+            if (matchingSite) setManualSiteId(matchingSite.id);
+            return;
+          }
+          break;
+        }
+      }
+    }
+
+    // Default to check_in and first site
     setManualType("check_in");
+    setManualSiteId(sites.data?.rows[0]?.id ?? "");
+  };
+
+  const openManualEntry = (prefillUserId?: string) => {
+    const targetUserId = prefillUserId ?? selected?.id ?? list.data?.rows[0]?.user_id ?? "";
+    setManualUserId(targetUserId);
+    applyWorkerDefaults(targetUserId);
     setManualDate(cairoDate());
-    const now = new Date();
-    const cairoH = String(now.getUTCHours() + 2).padStart(2, "0");
-    const cairoM = String(now.getUTCMinutes()).padStart(2, "0");
-    setManualTime(`${cairoH}:${cairoM}`);
+    setManualTime(cairoTimeStr());
     setManualReason("");
     setManualStep("form");
     setManualOpen(true);
@@ -1830,7 +1868,7 @@ function Attendance({ locale }: { locale: Locale }) {
       toast.error(t(locale, "reviewReasonRequired"));
       return;
     }
-    const actualIso = new Date(`${manualDate}T${manualTime}:00+02:00`).toISOString();
+    const actualIso = cairoToIso(manualDate, manualTime);
     setManualSubmitting(true);
     try {
       await createManualAttendance({
@@ -2374,7 +2412,11 @@ function Attendance({ locale }: { locale: Locale }) {
                 <select
                   className="h-10 rounded-lg border border-line bg-elevated px-2 text-xs"
                   value={manualUserId}
-                  onChange={(e) => setManualUserId(e.target.value)}
+                  onChange={(e) => {
+                    const uid = e.target.value;
+                    setManualUserId(uid);
+                    applyWorkerDefaults(uid);
+                  }}
                 >
                   {(list.data?.rows ?? []).map((w) => (
                     <option key={w.user_id} value={w.user_id}>

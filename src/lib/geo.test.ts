@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   addCairoDays,
+  cairoTimeStr,
+  cairoToIso,
   haversineMeters,
   isImpossibleTravel,
   isInsideGeofence,
@@ -151,3 +153,27 @@ describe("parseGoogleMapsUrl", () => {
     assert.equal(needsMapsExpand("https://maps.app.goo.gl/abc123"), true);
   });
 });
+
+describe("cairoToIso and cairoTimeStr", () => {
+  it("converts winter Cairo time (UTC+2) to UTC ISO string", () => {
+    // 2026-01-15 16:00 in Cairo is 14:00 UTC
+    assert.equal(cairoToIso("2026-01-15", "16:00"), "2026-01-15T14:00:00.000Z");
+  });
+
+  it("converts summer Cairo time (UTC+3, DST) to UTC ISO string", () => {
+    // 2026-06-15 16:00 in Cairo is 13:00 UTC
+    assert.equal(cairoToIso("2026-06-15", "16:00"), "2026-06-15T13:00:00.000Z");
+  });
+
+  it("handles midnight crossing cleanly", () => {
+    // 2026-01-15 00:30 Cairo is 2026-01-14 22:30 UTC
+    assert.equal(cairoToIso("2026-01-15", "00:30"), "2026-01-14T22:30:00.000Z");
+  });
+
+  it("formats valid HH:MM without producing 24 or 25", () => {
+    const formatted = cairoTimeStr(new Date("2026-10-30T22:30:00Z"));
+    // 22:30 UTC in winter (UTC+2) is 00:30 next day
+    assert.equal(formatted, "00:30");
+  });
+});
+
