@@ -32,6 +32,7 @@ import { clientEventId } from "@/lib/utils";
 import { getDeviceId, punchMessage, signDeviceProof } from "@/lib/device-bind";
 import { PushNudge } from "./alerts-bell";
 import { LocationStatusCard, evaluateGpsAdvisory } from "./worker/location-status-card";
+import { useGpsAcquisition } from "@/lib/use-gps-acquisition";
 import { PrimaryPunchControl } from "./worker/primary-punch-control";
 import { ShiftSummaryCard } from "./worker/shift-summary-card";
 import { DeviceStatusBanner, NetworkTimeoutAlert } from "./worker/device-status-banner";
@@ -170,32 +171,14 @@ function HomeTab({
   onHome: (next: HomeData) => void;
 }) {
   const qc = useQueryClient();
-  const [pos, setPos] = useState<{
-    lat: number;
-    lng: number;
-    accuracy: number;
-    mock: boolean;
-    altitude: number | null;
-    speed: number | null;
-    gpsFixAt: string;
-  } | null>(null);
-  const [isRefining, setIsRefining] = useState(false);
-  const [locErr, setLocErr] = useState<"denied" | "unavailable" | "timeout" | "unsupported" | null>(null);
-  // "unknown" while we're still asking the browser; "prompt" means we haven't
-  // asked the user yet and must wait for a real tap (see requestLocation
-  // below); "granted"/"denied" mirror the Permissions API's PermissionState.
-  const [permState, setPermState] = useState<"unknown" | "granted" | "prompt" | "denied">("unknown");
-  const watchIdRef = useRef<number | null>(null);
-  const refinementTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const bestPosRef = useRef<{
-    lat: number;
-    lng: number;
-    accuracy: number;
-    mock: boolean;
-    altitude: number | null;
-    speed: number | null;
-    gpsFixAt: string;
-  } | null>(null);
+  // GPS acquisition (watch lifecycle, refinement, retry) lives in
+  // lib/gps-acquisition.ts so it can be tested with a fake GPS + clock.
+  const gps = useGpsAcquisition();
+  const pos = gps.reading;
+  const isRefining = gps.phase === "acquiring";
+  const permState = gps.permState;
+  const requestLocation = gps.start;
+  const startRefinement = gps.start;
   const [siteId, setSiteId] = useState<number | null>(home.todayAssign[0]?.site_id ?? home.sites[0]?.id ?? null);
   const [offline, setOffline] = useState(typeof navigator !== "undefined" ? queuedCount() : 0);
   const pickedSite = useRef(false);
@@ -205,121 +188,6 @@ function HomeTab({
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewReason, setReviewReason] = useState("");
   const [submittingReview, setSubmittingReview] = useState(false);
-
-  const onPosition = (p: GeolocationPosition) => {
-    // Drop excessively stale cached readings (older than 10 seconds)
-    const ageMs = Date.now() - p.timestamp;
-    if (ageMs > 10_000) return;
-
-    const coords = p.coords as GeolocationCoordinates & { mock?: boolean; isFromMockProvider?: boolean };
-    const reading = {
-      lat: coords.latitude,
-      lng: coords.longitude,
-      accuracy: coords.accuracy,
-      mock: Boolean(coords.mock || coords.isFromMockProvider),
-      altitude: coords.altitude,
-      speed: coords.speed,
-      gpsFixAt: new Date(p.timestamp).toISOString(),
-    };
-
-    // Keep best reading acquired so far during this refinement window
-    if (!bestPosRef.current || reading.accuracy <= bestPosRef.current.accuracy) {
-      bestPosRef.current = reading;
-      setPos(reading);
-    }
-
-    setLocErr(null);
-    setPermState("granted");
-
-    // If reading already reaches high-confidence threshold (<= 25m), finish refinement early
-    if (reading.accuracy <= 25) {
-      if (refinementTimerRef.current) {
-        clearTimeout(refinementTimerRef.current);
-        refinementTimerRef.current = null;
-      }
-      setIsRefining(false);
-    }
-  };
-
-  const onPositionError = (err: GeolocationPositionError) => {
-    if (err.code === err.PERMISSION_DENIED) {
-      setLocErr("denied");
-      setPermState("denied");
-      setIsRefining(false);
-      if (refinementTimerRef.current) clearTimeout(refinementTimerRef.current);
-    } else if (err.code === err.POSITION_UNAVAILABLE) {
-      if (!bestPosRef.current && !isRefining) setLocErr("unavailable");
-    }
-  };
-
-  const stopWatch = () => {
-    if (refinementTimerRef.current) {
-      clearTimeout(refinementTimerRef.current);
-      refinementTimerRef.current = null;
-    }
-    if (watchIdRef.current != null) {
-      navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
-    }
-  };
-
-  const startRefinement = () => {
-    stopWatch();
-    setIsRefining(true);
-    setLocErr(null);
-
-    // 20-second bounded refinement window: gives older phone GPS chipsets time to lock satellites
-    refinementTimerRef.current = setTimeout(() => {
-      setIsRefining(false);
-      if (!bestPosRef.current) {
-        setLocErr("timeout");
-      }
-    }, 20_000);
-
-    watchIdRef.current = navigator.geolocation.watchPosition(onPosition, onPositionError, {
-      enableHighAccuracy: true,
-      maximumAge: 0, // Force fresh hardware reading
-      timeout: 10_000,
-    });
-  };
-
-  const requestLocation = () => {
-    setLocErr(null);
-    bestPosRef.current = null;
-    startRefinement();
-  };
-
-  useEffect(() => {
-    if (!("geolocation" in navigator)) {
-      setLocErr("unsupported");
-      return;
-    }
-    if (!navigator.permissions?.query) {
-      startRefinement();
-      return;
-    }
-    let status: PermissionStatus | null = null;
-    navigator.permissions
-      .query({ name: "geolocation" })
-      .then((result) => {
-        status = result;
-        setPermState(result.state);
-        if (result.state === "granted") startRefinement();
-        result.onchange = () => {
-          setPermState(result.state);
-          if (result.state === "granted") startRefinement();
-          if (result.state === "denied") {
-            setLocErr("denied");
-            setIsRefining(false);
-          }
-        };
-      })
-      .catch(() => startRefinement());
-    return () => {
-      if (status) status.onchange = null;
-      stopWatch();
-    };
-  }, []);
 
   useEffect(() => {
     const flush = () => {
@@ -525,13 +393,13 @@ function HomeTab({
 
   // Active advisory state including permission checks and progressive refinement
   const effectiveGpsState =
-    locErr === "denied"
+    gps.phase === "denied"
       ? "permission_denied"
-      : locErr === "timeout" && !pos
+      : gps.phase === "timeout"
       ? "timeout"
       : isRefining && (!pos || pos.accuracy > 25)
       ? "refining"
-      : !pos || locErr === "timeout" || locErr === "unavailable"
+      : !pos
       ? "locating"
       : gpsAdvisory.state;
 
@@ -666,7 +534,7 @@ function HomeTab({
             {t(locale, "locEnableBtn")}
           </Button>
         </Panel>
-      ) : locErr === "denied" ? (
+      ) : gps.phase === "denied" ? (
         <Panel className="grid gap-3 p-4 text-center">
           <MapPinOff className="mx-auto h-7 w-7 text-rose-500" />
           <p className="font-display text-base font-semibold">{t(locale, "locPermDeniedTitle")}</p>

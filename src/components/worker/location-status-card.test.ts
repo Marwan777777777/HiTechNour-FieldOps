@@ -167,4 +167,43 @@ describe("formatDurationMinutes Unit Tests", () => {
     assert.equal(formatDurationMinutes(Number.NaN), "00h 00m");
     assert.equal(formatDurationMinutes(Number.POSITIVE_INFINITY), "00h 00m");
   });
+
+  describe("large-area sites (R > 500m): whole accuracy circle inside the geofence", () => {
+    it("16. Screenshot case: R=3000, D=500, A=2000 -> certainly inside, can punch", () => {
+      const res = evaluateGpsAdvisory(500, 3000, 2000);
+      assert.equal(res.state, "ready");
+      assert.equal(res.inside, true);
+      assert.equal(res.canPunch, true);
+    });
+
+    it("17. Exact edge: D + A == R is still inside", () => {
+      assert.equal(evaluateGpsAdvisory(1000, 3000, 2000).canPunch, true);
+    });
+
+    it("18. Accuracy circle crosses the boundary (D + A > R) stays blocked", () => {
+      const res = evaluateGpsAdvisory(1500, 3000, 2000);
+      assert.equal(res.state, "insufficient_accuracy");
+      assert.equal(res.canPunch, false);
+    });
+
+    it("19. Coarse fix with centre OUTSIDE the radius never passes", () => {
+      assert.equal(evaluateGpsAdvisory(3500, 3000, 400).canPunch, false);
+    });
+
+    it("20. Compact sites are untouched: R=200, D=10, A=180 still insufficient", () => {
+      const res = evaluateGpsAdvisory(10, 200, 180);
+      assert.equal(res.state, "insufficient_accuracy");
+      assert.equal(res.canPunch, false);
+    });
+
+    it("21. Gate is strictly R > 500: R=500, D=10, A=400 stays blocked", () => {
+      assert.equal(evaluateGpsAdvisory(10, 500, 400).canPunch, false);
+    });
+
+    it("22. Invalid accuracy never passes even on large sites", () => {
+      assert.equal(evaluateGpsAdvisory(10, 3000, 0).canPunch, false);
+      assert.equal(evaluateGpsAdvisory(10, 3000, null).canPunch, false);
+      assert.equal(evaluateGpsAdvisory(10, 3000, Number.NaN).canPunch, false);
+    });
+  });
 });

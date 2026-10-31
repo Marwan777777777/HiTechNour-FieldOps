@@ -8,6 +8,9 @@ export type GpsAdvisoryState =
   | "timeout"
   | "permission_denied";
 
+/** Radius above which a site counts as "large-area" (see rule 0 below). */
+export const LARGE_SITE_RADIUS_M = 500;
+
 export function evaluateGpsAdvisory(
   distanceMeters: number | null,
   radiusMeters: number,
@@ -33,6 +36,28 @@ export function evaluateGpsAdvisory(
   const delta = D - R;
   const B_auto = 15.0;
   const B_max = 30.0;
+
+  // 0. Large-area sites: the fixed 150m accuracy cap below is meant for compact
+  // sites (tens to a few hundred metres). On a site with a 2-3km radius a
+  // network/cell fix (+-1-2km) is still conclusive when the WHOLE uncertainty
+  // circle sits inside the geofence: wherever the phone really is within that
+  // circle, it is inside the site. Only applies to large radii so the
+  // compact-site rules (and their specs) are untouched. The server still flags
+  // such a punch as low_accuracy for admin review; it is never silently clean.
+  if (
+    R > LARGE_SITE_RADIUS_M &&
+    accuracyMeters != null &&
+    Number.isFinite(accuracyMeters) &&
+    accuracyMeters > 0 &&
+    D + accuracyMeters <= R
+  ) {
+    return {
+      state: "ready",
+      distanceToBoundary: Math.round(delta),
+      inside: true,
+      canPunch: true,
+    };
+  }
 
   // 1. Accuracy Sanity / Operational Limit / Invalid (<= 0, null, NaN, Infinity, > 150m)
   if (
