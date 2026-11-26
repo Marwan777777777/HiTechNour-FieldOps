@@ -58,7 +58,17 @@ export async function flushQueue(send: (item: QueuedPunch) => Promise<unknown>) 
       synced += 1;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
-      if (msg === "ALREADY_CHECKED_IN" || msg === "NOT_CHECKED_IN") continue;
+      // Terminal server verdicts: retrying the same payload can never succeed,
+      // so drop it instead of re-sending it on every reconnect.
+      if (
+        msg === "ALREADY_CHECKED_IN" ||
+        msg === "NOT_CHECKED_IN" ||
+        msg === "LOW_ACCURACY" ||
+        msg === "GPS_ACCURACY_MISSING" ||
+        msg === "OUTSIDE_RADIUS"
+      ) {
+        continue;
+      }
       kept.push(item);
     }
   }

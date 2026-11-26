@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   addCairoDays,
+  assessGpsFix,
   cairoTimeStr,
   cairoToIso,
   haversineMeters,
@@ -13,6 +14,28 @@ import {
   parseGoogleMapsUrl,
   primaryFlag,
 } from "./geo.ts";
+
+describe("assessGpsFix (server accuracy gate)", () => {
+  const base = { type: "check_in" as const, radiusMeters: 200 };
+  it("refuses a fix with no accuracy or a zero accuracy", () => {
+    assert.deepEqual(assessGpsFix({ ...base, distanceMeters: 10, accuracyMeters: null }), { ok: false, code: "GPS_ACCURACY_MISSING" });
+    assert.deepEqual(assessGpsFix({ ...base, distanceMeters: 10, accuracyMeters: 0 }), { ok: false, code: "GPS_ACCURACY_MISSING" });
+  });
+  it("accepts a precise fix, not flagged", () =>
+    assert.deepEqual(assessGpsFix({ ...base, distanceMeters: 10, accuracyMeters: 12 }), { ok: true, lowAccuracy: false }));
+  it("accepts 100-150m but marks it low accuracy", () =>
+    assert.deepEqual(assessGpsFix({ ...base, distanceMeters: 10, accuracyMeters: 140 }), { ok: true, lowAccuracy: true }));
+  it("refuses a coarse check-in on a compact site", () =>
+    assert.deepEqual(assessGpsFix({ ...base, distanceMeters: 0, accuracyMeters: 2000 }), { ok: false, code: "LOW_ACCURACY" }));
+  it("accepts a coarse fix whose circle sits inside a large site", () =>
+    assert.deepEqual(assessGpsFix({ ...base, radiusMeters: 3000, distanceMeters: 200, accuracyMeters: 1500 }), { ok: true, lowAccuracy: true }));
+  it("lets a coarse check-out through when it touches the site", () =>
+    assert.deepEqual(assessGpsFix({ ...base, type: "check_out", distanceMeters: 0, accuracyMeters: 2000 }), { ok: true, lowAccuracy: true }));
+  it("refuses a coarse check-out far from the site", () =>
+    assert.deepEqual(assessGpsFix({ ...base, type: "check_out", distanceMeters: 26_000, accuracyMeters: 2000 }), { ok: false, code: "LOW_ACCURACY" }));
+  it("honours a stricter tenant cap", () =>
+    assert.deepEqual(assessGpsFix({ ...base, distanceMeters: 10, accuracyMeters: 60, maxAccuracyMeters: 50 }), { ok: false, code: "LOW_ACCURACY" }));
+});
 
 describe("haversineMeters", () => {
   it("is ~0 at the same point", () => {

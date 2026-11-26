@@ -13,6 +13,9 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiCronDailyReportRouteImport } from './routes/api/cron/daily-report'
+import { Route as ApiV1EvidenceRouteImport } from './routes/api/v1/evidence'
+import { Route as ApiV1SitesLiveMapRouteImport } from './routes/api/v1/sites/live-map'
+import { Route as ApiV1TenantConfigRouteImport } from './routes/api/v1/tenant/config'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -34,18 +37,39 @@ const ApiCronDailyReportRoute = ApiCronDailyReportRouteImport.update({
   path: '/api/cron/daily-report',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiV1EvidenceRoute = ApiV1EvidenceRouteImport.update({
+  id: '/api/v1/evidence',
+  path: '/api/v1/evidence',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiV1SitesLiveMapRoute = ApiV1SitesLiveMapRouteImport.update({
+  id: '/api/v1/sites/live-map',
+  path: '/api/v1/sites/live-map',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiV1TenantConfigRoute = ApiV1TenantConfigRouteImport.update({
+  id: '/api/v1/tenant/config',
+  path: '/api/v1/tenant/config',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cron/daily-report': typeof ApiCronDailyReportRoute
+  '/api/v1/evidence': typeof ApiV1EvidenceRoute
+  '/api/v1/sites/live-map': typeof ApiV1SitesLiveMapRoute
+  '/api/v1/tenant/config': typeof ApiV1TenantConfigRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cron/daily-report': typeof ApiCronDailyReportRoute
+  '/api/v1/evidence': typeof ApiV1EvidenceRoute
+  '/api/v1/sites/live-map': typeof ApiV1SitesLiveMapRoute
+  '/api/v1/tenant/config': typeof ApiV1TenantConfigRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -53,13 +77,38 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cron/daily-report': typeof ApiCronDailyReportRoute
+  '/api/v1/evidence': typeof ApiV1EvidenceRoute
+  '/api/v1/sites/live-map': typeof ApiV1SitesLiveMapRoute
+  '/api/v1/tenant/config': typeof ApiV1TenantConfigRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/api/auth/$' | '/api/cron/daily-report'
+  fullPaths:
+    | '/'
+    | '/login'
+    | '/api/auth/$'
+    | '/api/cron/daily-report'
+    | '/api/v1/evidence'
+    | '/api/v1/sites/live-map'
+    | '/api/v1/tenant/config'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/api/auth/$' | '/api/cron/daily-report'
-  id: '__root__' | '/' | '/login' | '/api/auth/$' | '/api/cron/daily-report'
+  to:
+    | '/'
+    | '/login'
+    | '/api/auth/$'
+    | '/api/cron/daily-report'
+    | '/api/v1/evidence'
+    | '/api/v1/sites/live-map'
+    | '/api/v1/tenant/config'
+  id:
+    | '__root__'
+    | '/'
+    | '/login'
+    | '/api/auth/$'
+    | '/api/cron/daily-report'
+    | '/api/v1/evidence'
+    | '/api/v1/sites/live-map'
+    | '/api/v1/tenant/config'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -67,6 +116,9 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiCronDailyReportRoute: typeof ApiCronDailyReportRoute
+  ApiV1EvidenceRoute: typeof ApiV1EvidenceRoute
+  ApiV1SitesLiveMapRoute: typeof ApiV1SitesLiveMapRoute
+  ApiV1TenantConfigRoute: typeof ApiV1TenantConfigRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -99,6 +151,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiCronDailyReportRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/v1/evidence': {
+      id: '/api/v1/evidence'
+      path: '/api/v1/evidence'
+      fullPath: '/api/v1/evidence'
+      preLoaderRoute: typeof ApiV1EvidenceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/v1/sites/live-map': {
+      id: '/api/v1/sites/live-map'
+      path: '/api/v1/sites/live-map'
+      fullPath: '/api/v1/sites/live-map'
+      preLoaderRoute: typeof ApiV1SitesLiveMapRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/v1/tenant/config': {
+      id: '/api/v1/tenant/config'
+      path: '/api/v1/tenant/config'
+      fullPath: '/api/v1/tenant/config'
+      preLoaderRoute: typeof ApiV1TenantConfigRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -107,16 +180,10 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiCronDailyReportRoute: ApiCronDailyReportRoute,
+  ApiV1EvidenceRoute: ApiV1EvidenceRoute,
+  ApiV1SitesLiveMapRoute: ApiV1SitesLiveMapRoute,
+  ApiV1TenantConfigRoute: ApiV1TenantConfigRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-  }
-}

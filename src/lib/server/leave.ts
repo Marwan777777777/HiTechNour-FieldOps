@@ -46,7 +46,8 @@ export const requestLeave = createServerFn({ method: "POST" })
       insert into leave_requests (user_id, kind, start_date, end_date, reason)
       values (${context.userId}, ${data.kind}, ${data.startDate}::date, ${data.endDate}::date, ${reason})`;
     const admins = await sql<{ user_id: string }>`
-      select user_id from profiles where role = 'admin' and active = true`;
+      select user_id from profiles
+      where role = 'admin' and active = true and tenant_id = ${me[0].tenant_id}`;
     await notifyAndPush(
       sql,
       admins.map((a) => a.user_id),

@@ -620,13 +620,14 @@ export const forceLogout = createServerFn({ method: "POST" })
 export const listSites = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
-    await requireAdmin(context.userId);
+    const admin = await requireAdmin(context.userId);
     const sql = await getSql();
     const rows = await sql<Site>`
       select s.id, s.name, s.address, s.lat, s.lng, s.radius_meters, s.active,
              s.group_id, g.name as group_name
       from sites s
       left join site_groups g on g.id = s.group_id
+      where s.tenant_id = ${admin.tenant_id}
       order by g.name nulls last, s.name`;
     return { rows };
   });
@@ -646,13 +647,23 @@ export const saveSite = createServerFn({ method: "POST" })
   )
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
-    await requireAdmin(context.userId);
+    const admin = await requireAdmin(context.userId);
     const name = data.name.trim();
     if (!name) throw new Error("Site name is required.");
     if (!Number.isFinite(data.lat) || !Number.isFinite(data.lng)) throw new Error("Coordinates required.");
-    const radius = data.radius_meters && data.radius_meters > 0 ? data.radius_meters : 200;
+    if (Math.abs(data.lat) > 90 || Math.abs(data.lng) > 180) throw new Error("Coordinates out of range.");
+    const radius =
+      data.radius_meters && data.radius_meters > 0 ? Math.min(Math.round(data.radius_meters), 50_000) : 200;
     const sql = await getSql();
+    if (data.group_id != null) {
+      const g = await sql<{ id: number }>`
+        select id from site_groups where id = ${data.group_id} and tenant_id = ${admin.tenant_id}`;
+      if (!g[0]) throw new Error("Site group not found.");
+    }
     if (data.id) {
+      const own = await sql<{ id: number }>`
+        select id from sites where id = ${data.id} and tenant_id = ${admin.tenant_id}`;
+      if (!own[0]) throw new Error("Site not found.");
       await sql`update sites set
         name = ${name},
         address = ${data.address ?? null},
@@ -663,8 +674,8 @@ export const saveSite = createServerFn({ method: "POST" })
         group_id = ${data.group_id ?? null}
         where id = ${data.id}`;
     } else {
-      await sql`insert into sites (name, address, lat, lng, radius_meters, group_id)
-        values (${name}, ${data.address ?? null}, ${data.lat}, ${data.lng}, ${radius}, ${data.group_id ?? null})`;
+      await sql`insert into sites (name, address, lat, lng, radius_meters, group_id, tenant_id)
+        values (${name}, ${data.address ?? null}, ${data.lat}, ${data.lng}, ${radius}, ${data.group_id ?? null}, ${admin.tenant_id})`;
     }
     return { ok: true };
   });
@@ -1060,7 +1071,7 @@ function csvEscape(value: string) {
 export const liveMap = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
-    await requireAdmin(context.userId);
+    const admin = await requireAdmin(context.userId);
     const sql = await getSql();
     const sites = await sql<{
       id: number;
@@ -1068,7 +1079,8 @@ export const liveMap = createServerFn({ method: "GET" })
       lat: number;
       lng: number;
       radius_meters: number;
-    }>`select id, name, lat, lng, radius_meters from sites where active = true`;
+    }>`select id, name, lat, lng, radius_meters from sites
+       where active = true and tenant_id = ${admin.tenant_id}`;
     const people = await sql<{
       user_id: string;
       full_name: string;
@@ -1090,7 +1102,7 @@ export const liveMap = createServerFn({ method: "GET" })
         limit 1
       ) c on true
       left join sites s on s.id = c.site_id
-      where p.active = true`;
+      where p.active = true and p.tenant_id = ${admin.tenant_id}`;
     return { sites, people };
   });
 
@@ -1146,16 +1158,20 @@ export const saveSiteGroup = createServerFn({ method: "POST" })
   .validator((d: { id?: number; name: string; active?: boolean }) => d)
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
-    await requireAdmin(context.userId);
+    const admin = await requireAdmin(context.userId);
     const name = data.name.trim();
     if (!name) throw new Error("Group name is required.");
     const sql = await getSql();
     if (data.id) {
-      await sql`update site_groups set name = ${name}, active = ${data.active ?? true} where id = ${data.id}`;
+      const updated = await sql<{ id: number }>`
+        update site_groups set name = ${name}, active = ${data.active ?? true}
+        where id = ${data.id} and tenant_id = ${admin.tenant_id}
+        returning id`;
+      if (!updated[0]) throw new Error("Site group not found.");
       return { id: data.id };
     }
     const rows = await sql<{ id: number }>`
-      insert into site_groups (name) values (${name}) returning id`;
+      insert into site_groups (name, tenant_id) values (${name}, ${admin.tenant_id}) returning id`;
     return { id: rows[0]!.id };
   });
 

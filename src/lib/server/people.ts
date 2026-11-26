@@ -25,7 +25,7 @@ export const createWorker = createServerFn({ method: "POST" })
   )
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
-    await requireAdmin(context.userId);
+    const admin = await requireAdmin(context.userId);
     const username = data.username.trim();
     const fullName = data.fullName.trim();
     const password = data.password;
@@ -42,11 +42,12 @@ export const createWorker = createServerFn({ method: "POST" })
       values (${id}, ${fullName}, ${email}, ${true}, now(), now())`;
     await sql`insert into "account" (id, "accountId", "providerId", "userId", password, "createdAt", "updatedAt")
       values (${randomUUID()}, ${id}, ${"credential"}, ${id}, ${hash}, now(), now())`;
+    // New accounts always join the creating admin's organization.
     await sql`insert into profiles (
-        user_id, email, username, full_name, phone, role, active, device_approved
+        user_id, email, username, full_name, phone, role, active, device_approved, tenant_id
       ) values (
         ${id}, ${email}, ${username.slice(0, 40)}, ${fullName}, ${data.phone?.trim() || null},
-        ${role}, ${true}, ${true}
+        ${role}, ${true}, ${true}, ${admin.tenant_id}
       )`;
     await sql`insert into activity_logs (user_id, kind, detail)
       values (${context.userId}, ${"create_user"}, ${username})`;

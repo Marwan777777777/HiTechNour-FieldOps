@@ -81,6 +81,46 @@ export function isInsideGeofence(
   return distanceMeters <= radiusMeters + buffer;
 }
 
+/** Default per-tenant cap on GPS accuracy accepted for a punch (organizations.max_gps_accuracy_m). */
+export const DEFAULT_MAX_GPS_ACCURACY_M = 150;
+/** Mirrors LARGE_SITE_RADIUS_M in geo-advisory.ts (kept local: geo.ts has no imports). */
+const LARGE_SITE_RADIUS_M = 500;
+
+export type GpsFixVerdict =
+  | { ok: true; lowAccuracy: boolean }
+  | { ok: false; code: "GPS_ACCURACY_MISSING" | "LOW_ACCURACY" };
+
+/**
+ * Server-side accuracy gate, applied before the geofence verdict.
+ *
+ * - A fix without a positive, finite accuracy is refused: real phones always
+ *   report one, and 0 is a classic fake-GPS signature.
+ * - A fix within the tenant's cap is accepted (the geofence check decides).
+ * - A worse fix is still accepted on a LARGE site (radius > 500 m, the same
+ *   rule as the client advisory in geo-advisory.ts) when the WHOLE uncertainty
+ *   circle lies inside the geofence, or, for a check-out only, when the circle
+ *   at least touches the site, so shifts are never left open by a phone on
+ *   approximate location. Both are flagged as low accuracy.
+ * - Anything else is refused: a poor check-in must go through admin review.
+ */
+export function assessGpsFix(input: {
+  type: "check_in" | "check_out";
+  distanceMeters: number;
+  radiusMeters: number;
+  accuracyMeters: number | null | undefined;
+  maxAccuracyMeters?: number;
+}): GpsFixVerdict {
+  const a = input.accuracyMeters;
+  if (a == null || !Number.isFinite(a) || a <= 0) return { ok: false, code: "GPS_ACCURACY_MISSING" };
+  const cap = input.maxAccuracyMeters ?? DEFAULT_MAX_GPS_ACCURACY_M;
+  if (a <= cap) return { ok: true, lowAccuracy: a > ACCURACY_THRESHOLD_M };
+  const d = input.distanceMeters;
+  const r = input.radiusMeters;
+  if (r > LARGE_SITE_RADIUS_M && d + a <= r) return { ok: true, lowAccuracy: true };
+  if (input.type === "check_out" && d - a <= r) return { ok: true, lowAccuracy: true };
+  return { ok: false, code: "LOW_ACCURACY" };
+}
+
 export function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6_371_000;
   const toRad = (d: number) => (d * Math.PI) / 180;

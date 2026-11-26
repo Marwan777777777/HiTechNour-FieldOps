@@ -19,6 +19,8 @@ export type Profile = {
   pending_device_webauthn_id?: string | null;
   token_version: number;
   active: boolean;
+  /** Owning organization (migration 0014). */
+  tenant_id: number;
 };
 
 export type Site = {

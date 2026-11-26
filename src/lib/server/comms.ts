@@ -56,6 +56,7 @@ export const loadAnnouncements = createServerFn({ method: "GET" })
     }>`
       select id, title, body, created_at::text as created_at
       from announcements
+      where tenant_id = ${me[0].tenant_id}
       order by created_at desc
       limit 20`;
     return { rows };
@@ -122,15 +123,16 @@ export const createAnnouncement = createServerFn({ method: "POST" })
   .validator((d: { title: string; body: string }) => d)
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
-    await requireAdmin(context.userId);
+    const admin = await requireAdmin(context.userId);
     const title = data.title.trim();
     const body = data.body.trim();
     if (!title || !body) throw new Error("Title and body are required.");
     const sql = await getSql();
-    await sql`insert into announcements (title, body, created_by)
-      values (${title}, ${body}, ${context.userId})`;
+    await sql`insert into announcements (title, body, created_by, tenant_id)
+      values (${title}, ${body}, ${context.userId}, ${admin.tenant_id})`;
+    // Broadcast only to the admin's own organization.
     const people = await sql<{ user_id: string }>`
-      select user_id from profiles where active = true`;
+      select user_id from profiles where active = true and tenant_id = ${admin.tenant_id}`;
     await notifyAndPush(
       sql,
       people.map((p) => p.user_id),
@@ -146,7 +148,7 @@ export const createAnnouncement = createServerFn({ method: "POST" })
 export const adminListAnnouncements = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
-    await requireAdmin(context.userId);
+    const admin = await requireAdmin(context.userId);
     const sql = await getSql();
     const rows = await sql<{
       id: number;
@@ -155,6 +157,7 @@ export const adminListAnnouncements = createServerFn({ method: "GET" })
       created_at: string;
     }>`
       select id, title, body, created_at::text as created_at
-      from announcements order by created_at desc limit 40`;
+      from announcements where tenant_id = ${admin.tenant_id}
+      order by created_at desc limit 40`;
     return { rows };
   });

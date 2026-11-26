@@ -50,6 +50,9 @@ function errorCopy(locale: Locale, msg: string) {
   if (msg === "NOT_CHECKED_IN") return t(locale, "notIn");
   if (msg === "RATE_LIMITED") return t(locale, "slowDown");
   if (msg === "OUTSIDE_RADIUS") return t(locale, "mustBeInside");
+  if (msg === "LOW_ACCURACY") return t(locale, "gpsTooCoarse");
+  if (msg === "GPS_ACCURACY_MISSING") return t(locale, "gpsNoAccuracy");
+  if (msg === "TENANT_SUSPENDED") return t(locale, "tenantSuspended");
   if (msg.startsWith("LOCKED_OUT")) return t(locale, "lockedOut");
   return msg;
 }

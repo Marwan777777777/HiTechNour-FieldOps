@@ -95,7 +95,7 @@ async function loadHome(userId: string) {
              s.group_id, g.name as group_name
       from sites s
       left join site_groups g on g.id = s.group_id
-      where s.active = true
+      where s.active = true and s.tenant_id = ${me.tenant_id}
       order by g.name nulls last, s.name`,
     sql<AssignmentRow>`
       select a.id, a.site_id, s.name as site_name, a.task, a.notes,
@@ -380,12 +380,18 @@ export const submitReport = createServerFn({ method: "POST" })
     const sql = await getSql();
     const me = await profileOf(context.userId);
     if (!me?.active) throw new Error("ACCOUNT_PENDING");
+    if (data.siteId != null) {
+      const own = await sql<{ id: number }>`
+        select id from sites where id = ${data.siteId} and tenant_id = ${me.tenant_id}`;
+      if (!own[0]) throw new Error("Site not found.");
+    }
     await sql`insert into reports (user_id, site_id, title, body, kind, category, priority, photo_data)
       values (${context.userId}, ${data.siteId ?? null}, ${title}, ${body}, ${kind}, ${category}, ${priority}, ${photo})`;
     await sql`insert into activity_logs (user_id, kind, detail)
       values (${context.userId}, ${kind}, ${title})`;
     const admins = await sql<{ user_id: string }>`
-      select user_id from profiles where role = 'admin' and active = true`;
+      select user_id from profiles
+      where role = 'admin' and active = true and tenant_id = ${me.tenant_id}`;
     const who = me.full_name;
     const heading = kind === "site_issue" ? "Site issue" : "New field report";
     await notifyAndPush(

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
-  ACCURACY_THRESHOLD_M,
   CHECKIN_RATE_LIMIT,
+  DEFAULT_MAX_GPS_ACCURACY_M,
+  assessGpsFix,
   STALE_SHIFT_HOURS,
   cairoDate,
   haversineMeters,
@@ -254,9 +255,13 @@ export async function processCheckin(
       return { ...existing[0], isCheckedIn: last[0]?.type === "check_in", replayed: true };
     }
 
-    const siteRows = await tx<Site>`
-      select id, name, address, lat, lng, radius_meters, active
-      from sites where id = ${payload.siteId} and active = true`;
+    // Scoped to the worker's tenant: a site id from another company is simply
+    // "not found" (the 0014 trigger would refuse the insert anyway).
+    const siteRows = await tx<Site & { max_gps_accuracy_m: number | null }>`
+      select s.id, s.name, s.address, s.lat, s.lng, s.radius_meters, s.active,
+             o.max_gps_accuracy_m
+      from sites s join organizations o on o.id = s.tenant_id
+      where s.id = ${payload.siteId} and s.active = true and s.tenant_id = ${user.tenant_id}`;
     const site = siteRows[0];
     if (!site) throw new FieldError("SITE_NOT_FOUND", "Site not found.");
 
@@ -325,6 +330,23 @@ export async function processCheckin(
       order by actual_time desc, id desc limit 4`;
 
     const dist = haversineMeters(payload.lat, payload.lng, site.lat, site.lng);
+    // Accuracy gate first (server-side Haversine distance vs. the tenant's GPS
+    // policy). Never trust the client's own geofence verdict.
+    const gps = assessGpsFix({
+      type: payload.type,
+      distanceMeters: dist,
+      radiusMeters: site.radius_meters,
+      accuracyMeters: payload.accuracy,
+      maxAccuracyMeters: site.max_gps_accuracy_m ?? DEFAULT_MAX_GPS_ACCURACY_M,
+    });
+    if (!gps.ok) {
+      throw new FieldError(
+        gps.code,
+        gps.code === "LOW_ACCURACY"
+          ? `GPS accuracy ±${Math.round(payload.accuracy ?? 0)} m is too low for ${site.name}. Turn on precise location or send the punch for approval.`
+          : "This phone did not report GPS accuracy. Turn on precise location and try again.",
+      );
+    }
     // A raw dist <= radius comparison ignores that every GPS fix carries its
     // own uncertainty: a "reliable" 80-90m-accuracy reading is still only
     // known to within +/-80-90m, so a worker genuinely standing at the site
@@ -347,8 +369,10 @@ export async function processCheckin(
     // (see the reordered primaryFlag), so an admin reviews the real
     // accuracy value instead of the app silently deciding "definitely
     // outside" from a number it can't trust.
-    const accuracyReliable = payload.accuracy != null && payload.accuracy <= ACCURACY_THRESHOLD_M;
-    if (status === "outside" && accuracyReliable) {
+    // Even an imprecise fix must have its uncertainty circle at least touch
+    // the geofence; one that is entirely elsewhere is "outside" regardless.
+    const circleMissesSite = dist - (payload.accuracy ?? 0) > site.radius_meters;
+    if (status === "outside" && (!gps.lowAccuracy || circleMissesSite)) {
       throw new FieldError(
         "OUTSIDE_RADIUS",
         `You are ${Math.round(dist)} m from ${site.name}. Move inside the ${site.radius_meters} m radius to ${payload.type === "check_out" ? "check out" : "check in"}.`,
