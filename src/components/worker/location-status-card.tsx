@@ -1,9 +1,42 @@
 import { CheckCircle2, AlertTriangle, AlertCircle, MapPinOff, RefreshCw, FileQuestion } from "lucide-react";
 import { type Locale, t } from "@/lib/i18n";
 import { type GpsAdvisoryState, evaluateGpsAdvisory } from "@/lib/geo-advisory";
+import { APPROXIMATE_ACCURACY_M } from "@/lib/punch-plan";
 import { Button } from "@/components/ui/button";
 
 export { type GpsAdvisoryState, evaluateGpsAdvisory };
+
+function GpsActions({
+  locale,
+  onRetryGps,
+  onRequestReview,
+}: {
+  locale: Locale;
+  onRetryGps?: () => void;
+  onRequestReview?: () => void;
+}) {
+  if (!onRetryGps && !onRequestReview) return null;
+  return (
+    <div className="grid gap-2 pt-1">
+      {onRetryGps ? (
+        <Button size="md" variant="outline" className="w-full text-sm" onClick={onRetryGps}>
+          <RefreshCw className="size-4" />
+          {t(locale, "retryGps")}
+        </Button>
+      ) : null}
+      {onRequestReview ? (
+        <button
+          type="button"
+          onClick={onRequestReview}
+          className="flex min-h-10 w-full items-center justify-center gap-2 text-sm font-medium text-amber-600 underline-offset-4 hover:underline dark:text-amber-400"
+        >
+          <FileQuestion className="size-4" />
+          {t(locale, "requestReviewBtn")}
+        </button>
+      ) : null}
+    </div>
+  );
+}
 
 export function LocationStatusCard({
   locale,
@@ -82,20 +115,7 @@ export function LocationStatusCard({
           <span className="font-mono text-xs text-faint">GPS</span>
         </div>
         <p className="text-xs text-muted">{t(locale, "locTimeoutNotice")}</p>
-        <div className="flex flex-wrap gap-2 pt-1">
-          {onRetryGps ? (
-            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={onRetryGps}>
-              <RefreshCw className="me-1.5 size-3" />
-              {t(locale, "retryGps")}
-            </Button>
-          ) : null}
-          {onRequestReview ? (
-            <Button size="sm" variant="outline" className="h-8 text-xs border-amber-500/40 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10" onClick={onRequestReview}>
-              <FileQuestion className="me-1.5 size-3" />
-              {t(locale, "requestReviewBtn")}
-            </Button>
-          ) : null}
-        </div>
+        <GpsActions locale={locale} onRetryGps={onRetryGps} onRequestReview={onRequestReview} />
       </div>
     );
   }
@@ -134,20 +154,7 @@ export function LocationStatusCard({
         <p className="text-xs text-muted">
           {t(locale, "locIndoorReviewNotice").replace("{acc}", String(roundAcc ?? 0))}
         </p>
-        <div className="flex flex-wrap gap-2 pt-1">
-          {onRetryGps ? (
-            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={onRetryGps}>
-              <RefreshCw className="me-1.5 size-3" />
-              {t(locale, "retryGps")}
-            </Button>
-          ) : null}
-          {onRequestReview ? (
-            <Button size="sm" variant="outline" className="h-8 text-xs border-amber-500/40 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10" onClick={onRequestReview}>
-              <FileQuestion className="me-1.5 size-3" />
-              {t(locale, "requestReviewBtn")}
-            </Button>
-          ) : null}
-        </div>
+        <GpsActions locale={locale} onRetryGps={onRetryGps} onRequestReview={onRequestReview} />
       </div>
     );
   }
@@ -165,22 +172,12 @@ export function LocationStatusCard({
           </span>
         </div>
         <p className="text-xs text-muted">
-          {t(locale, "locStepOutdoors").replace("{acc}", String(roundAcc ?? 0))}
+          {t(
+            locale,
+            (roundAcc ?? 0) >= APPROXIMATE_ACCURACY_M ? "locPreciseOff" : "locStepOutdoors",
+          ).replace("{acc}", String(roundAcc ?? 0))}
         </p>
-        <div className="flex flex-wrap gap-2 pt-1">
-          {onRetryGps ? (
-            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={onRetryGps}>
-              <RefreshCw className="me-1.5 size-3" />
-              {t(locale, "retryGps")}
-            </Button>
-          ) : null}
-          {onRequestReview ? (
-            <Button size="sm" variant="outline" className="h-8 text-xs border-amber-500/40 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10" onClick={onRequestReview}>
-              <FileQuestion className="me-1.5 size-3" />
-              {t(locale, "requestReviewBtn")}
-            </Button>
-          ) : null}
-        </div>
+        <GpsActions locale={locale} onRetryGps={onRetryGps} onRequestReview={onRequestReview} />
       </div>
     );
   }

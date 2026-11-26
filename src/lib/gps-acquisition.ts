@@ -59,8 +59,11 @@ export const GPS_CONFIG = {
   goodAccuracyM: 25,
   /** Fixes older than this are treated as cached and ignored. */
   maxFixAgeMs: 30_000,
-  /** A stored "best" reading older than this can be replaced by a worse one. */
+  /** A stored "best" reading older than this can be replaced by a somewhat
+   * worse one (up to twice its accuracy, or 50m). */
   bestStaleMs: 60_000,
+  /** Past this age any current reading replaces it. */
+  bestExpiredMs: 300_000,
   /** Per-attempt timeout handed to the browser (the watch keeps going after). */
   attemptTimeoutMs: 30_000,
 } as const;
@@ -156,8 +159,13 @@ export function createGpsAcquisition(opts: {
       take = true;
     } else if (reading.accuracy <= best.accuracy) {
       take = true;
-    } else if (now - bestAt > GPS_CONFIG.bestStaleMs) {
-      // The held reading is old; a worse but current one is more truthful.
+    } else if (
+      now - bestAt > GPS_CONFIG.bestExpiredMs ||
+      (now - bestAt > GPS_CONFIG.bestStaleMs &&
+        reading.accuracy <= Math.max(best.accuracy * 2, GPS_CONFIG.goodAccuracyM * 2))
+    ) {
+      // The held reading is old; a current one is more truthful. A coarse
+      // network fix must not wipe out a good one just because 60s passed.
       take = true;
     } else {
       // Worker clearly moved (the two uncertainty circles don't overlap): the

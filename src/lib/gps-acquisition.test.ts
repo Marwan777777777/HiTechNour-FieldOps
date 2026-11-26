@@ -189,6 +189,18 @@ describe("gps acquisition", () => {
     assert.equal(ctl.snapshot().reading?.accuracy, 10);
   });
 
+  it("a coarse fix does not replace a good one after 60s, only after expiry", () => {
+    const { ctl, fireWatch } = setup();
+    ctl.start();
+    fireWatch(position(10));
+    mock.timers.tick(61_000);
+    fireWatch(position(2000));
+    assert.equal(ctl.snapshot().reading?.accuracy, 10);
+    mock.timers.tick(GPS_CONFIG.bestExpiredMs);
+    fireWatch(position(2000));
+    assert.equal(ctl.snapshot().reading?.accuracy, 2000);
+  });
+
   it("permission denied is terminal and stops the watch", () => {
     const { ctl, fake } = setup();
     ctl.start();

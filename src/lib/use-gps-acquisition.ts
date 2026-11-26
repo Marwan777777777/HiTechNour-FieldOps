@@ -69,6 +69,17 @@ export function useGpsAcquisition(): {
     };
   }, [ctl]);
 
+  // Coming back to the app (e.g. from phone Settings after turning on precise
+  // location) restarts acquisition.
+  useEffect(() => {
+    if (permState !== "granted") return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") ctl.start();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [ctl, permState]);
+
   // Any real reading proves permission is granted (covers browsers whose
   // Permissions API reports "prompt" until the first successful fix).
   useEffect(() => {

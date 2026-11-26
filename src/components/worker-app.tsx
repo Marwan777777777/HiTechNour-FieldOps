@@ -33,6 +33,7 @@ import { getDeviceId, punchMessage, signDeviceProof } from "@/lib/device-bind";
 import { PushNudge } from "./alerts-bell";
 import { LocationStatusCard, evaluateGpsAdvisory } from "./worker/location-status-card";
 import { useGpsAcquisition } from "@/lib/use-gps-acquisition";
+import { planPunch } from "@/lib/punch-plan";
 import { PrimaryPunchControl } from "./worker/primary-punch-control";
 import { ShiftSummaryCard } from "./worker/shift-summary-card";
 import { DeviceStatusBanner, NetworkTimeoutAlert } from "./worker/device-status-banner";
@@ -145,11 +146,15 @@ export function WorkerApp({
                 <button
                   type="button"
                   onClick={() => setTab(item.id)}
-                  className={`flex min-h-14 w-full flex-col items-center justify-center gap-0.5 text-xs ${
-                    active ? "text-fg" : "text-faint"
+                  aria-current={active ? "page" : undefined}
+                  className={`relative flex min-h-14 w-full flex-col items-center justify-center gap-0.5 text-xs transition-colors ${
+                    active ? "font-semibold text-fg" : "text-faint"
                   }`}
                 >
-                  <Icon className="size-4" />
+                  {active ? (
+                    <span className="absolute inset-x-6 top-0 h-0.5 rounded-full bg-login-cyan" aria-hidden />
+                  ) : null}
+                  <Icon className="size-5" strokeWidth={active ? 2.25 : 1.75} />
                   {t(locale, item.label)}
                 </button>
               </li>
@@ -185,6 +190,7 @@ function HomeTab({
   const didAutoExpand = useRef(false);
 
   // Review request modal state
+  const [sitePickerOpen, setSitePickerOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewReason, setReviewReason] = useState("");
   const [submittingReview, setSubmittingReview] = useState(false);
@@ -281,8 +287,6 @@ function HomeTab({
 
   const site = sitesByDistance.find((s) => s.id === siteId) ?? sitesByDistance[0];
   const dist = pos && site ? haversineMeters(pos.lat, pos.lng, site.lat, site.lng) : null;
-  const inside =
-    dist != null && site ? isInsideGeofence(dist, site.radius_meters, pos?.accuracy) : false;
 
   // Evaluate advisory GPS state using Phase 1B.0.6 rules
   const gpsAdvisory = evaluateGpsAdvisory(
@@ -290,6 +294,17 @@ function HomeTab({
     site?.radius_meters ?? 50,
     pos?.accuracy
   );
+
+  const plan = planPunch({
+    isCheckedIn: home.isCheckedIn,
+    pending: home.pendingRequests ?? [],
+    state: gpsAdvisory.state,
+    canPunch: gpsAdvisory.canPunch,
+    distance: dist,
+    radius: site?.radius_meters ?? 50,
+    accuracy: pos?.accuracy ?? null,
+    mock: pos?.mock,
+  });
 
   const teamLog = useQuery({
     queryKey: ["htn-team-punches"],
@@ -305,7 +320,9 @@ function HomeTab({
         site.radius_meters,
         pos.accuracy,
       );
-      if (!here) throw new Error(t(locale, "mustBeInside"));
+      // A poor-accuracy check-out may sit outside the capped buffer; the plan
+      // already required its accuracy circle to touch the site.
+      if (!here && plan.mode !== "direct") throw new Error(t(locale, "mustBeInside"));
       const eventId = clientEventId();
       const deviceId = await getDeviceId();
       attemptedTypeRef.current = home.isCheckedIn ? "check_out" : "check_in";
@@ -340,7 +357,6 @@ function HomeTab({
         return await checkInOut({ data: payload });
       } catch (err) {
         if (typeof navigator !== "undefined" && !navigator.onLine) {
-          if (!here) throw new Error(t(locale, "mustBeInside"));
           enqueuePunch(payload);
           setOffline(queuedCount());
           throw new Error("OFFLINE");
@@ -403,9 +419,9 @@ function HomeTab({
       ? "locating"
       : gpsAdvisory.state;
 
-  const handleReviewSubmit = async () => {
+  const handleReviewSubmit = async (autoReason?: string) => {
     if (!site) return;
-    const reason = reviewReason.trim();
+    const reason = autoReason ?? reviewReason.trim();
     if (reason.length < 5) {
       toast.error(t(locale, "reviewReasonRequired"));
       return;
@@ -418,7 +434,7 @@ function HomeTab({
       await submitAttendanceRequest({
         data: {
           siteId: site.id,
-          type: home.isCheckedIn ? "check_out" : "check_in",
+          type: plan.type,
           lat: pos?.lat ?? null,
           lng: pos?.lng ?? null,
           accuracy: pos?.accuracy ?? null,
@@ -555,70 +571,102 @@ function HomeTab({
         />
       )}
 
-      {/* Site Selector Dropdown (Collapsible) */}
-      <div className="grid gap-1.5">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-          {t(locale, "site")}
-        </span>
-        {groupedSites.map(([groupName, groupSites]) => {
-          const isOpen = openGroups.has(groupName);
-          return (
-            <div key={groupName} className="overflow-hidden rounded-xl border border-line bg-elevated">
-              <button
-                type="button"
-                onClick={() => toggleGroup(groupName)}
-                className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium"
-                aria-expanded={isOpen}
-              >
-                <span>
-                  {groupName} · {groupSites.length}
-                </span>
-                <span className="text-[11px] text-muted">
-                  {isOpen ? t(locale, "collapseGroup") : t(locale, "expandGroup")}
-                </span>
-              </button>
-              {isOpen ? (
-                <div className="border-t border-line">
-                  {groupSites.map((s) => {
-                    const meters = pos ? Math.round(haversineMeters(pos.lat, pos.lng, s.lat, s.lng)) : null;
-                    const isGlobalClosest = pos && sitesByDistance[0]?.id === s.id;
-                    const selected = siteId === s.id;
-                    return (
-                      <button
-                        key={s.id}
-                        type="button"
-                        onClick={() => {
-                          pickedSite.current = true;
-                          setSiteId(s.id);
-                        }}
-                        className={`flex w-full items-center justify-between border-t border-line/60 px-3 py-2 text-start text-xs first:border-t-0 disabled:opacity-70 ${
-                          selected ? "bg-line/40 font-semibold text-fg" : "text-muted"
-                        }`}
-                      >
-                        <span className="truncate max-w-[200px]">{s.name}</span>
-                        <span className="font-mono text-[11px]">
-                          {meters != null ? `${meters}m` : "—"}
-                          {isGlobalClosest ? ` · ${t(locale, "closest")}` : ""}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Primary Punch Control Button */}
+      {/* Primary action - directly under GPS status so it is never below the fold */}
       <PrimaryPunchControl
         locale={locale}
-        isCheckedIn={home.isCheckedIn}
-        isPending={punch.isPending}
-        disabled={!pos || !inside || !deviceApproved || unconfirmedNetwork || !gpsAdvisory.canPunch || isRefining}
-        advisoryState={effectiveGpsState}
-        onPunch={() => punch.mutate()}
+        isCheckedIn={plan.type === "check_out"}
+        mode={plan.mode}
+        isPending={punch.isPending || submittingReview}
+        disabled={
+          !pos ||
+          plan.mode === "blocked" ||
+          plan.mode === "waiting" ||
+          !deviceApproved ||
+          unconfirmedNetwork ||
+          isRefining
+        }
+        onPunch={() => {
+          if (plan.mode === "pending") {
+            void handleReviewSubmit(`Auto: GPS accuracy ±${Math.round(pos!.accuracy)}m`);
+          } else {
+            punch.mutate();
+          }
+        }}
       />
+
+      {/* Selected site (compact). Full grouped list lives in a bottom sheet. */}
+      <button
+        type="button"
+        onClick={() => setSitePickerOpen(true)}
+        className="flex w-full items-center justify-between gap-3 rounded-xl border border-line bg-surface px-4 py-3 text-start active:bg-elevated"
+      >
+        <span className="flex min-w-0 items-center gap-3">
+          <MapPin className="size-4 shrink-0 text-muted" aria-hidden />
+          <span className="min-w-0">
+            <span className="block text-[11px] font-semibold uppercase tracking-wider text-muted">
+              {t(locale, "site")}
+            </span>
+            <span className="block truncate text-sm font-medium text-fg">
+              {sitesByDistance.find((x) => x.id === siteId)?.name ?? t(locale, "selectSite")}
+            </span>
+          </span>
+        </span>
+        <span className="shrink-0 text-xs font-medium text-muted">{t(locale, "changeSite")}</span>
+      </button>
+
+      <Sheet open={sitePickerOpen} onOpenChange={setSitePickerOpen} title={t(locale, "selectSite")}>
+        <div className="grid gap-2">
+          {groupedSites.map(([groupName, groupSites]) => {
+            const isOpen = openGroups.has(groupName);
+            return (
+              <div key={groupName} className="overflow-hidden rounded-xl border border-line bg-elevated">
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(groupName)}
+                  className="flex min-h-11 w-full items-center justify-between px-3 text-sm font-medium"
+                  aria-expanded={isOpen}
+                >
+                  <span>
+                    {groupName} · {groupSites.length}
+                  </span>
+                  <span className="text-xs text-muted">
+                    {isOpen ? t(locale, "collapseGroup") : t(locale, "expandGroup")}
+                  </span>
+                </button>
+                {isOpen ? (
+                  <div className="border-t border-line">
+                    {groupSites.map((s) => {
+                      const meters = pos ? Math.round(haversineMeters(pos.lat, pos.lng, s.lat, s.lng)) : null;
+                      const isGlobalClosest = pos && sitesByDistance[0]?.id === s.id;
+                      const selected = siteId === s.id;
+                      return (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => {
+                            pickedSite.current = true;
+                            setSiteId(s.id);
+                            setSitePickerOpen(false);
+                          }}
+                          className={`flex min-h-11 w-full items-center justify-between gap-3 border-t border-line/60 px-3 text-start text-sm first:border-t-0 ${
+                            selected ? "bg-line/40 font-semibold text-fg" : "text-muted"
+                          }`}
+                        >
+                          <span className="truncate">{s.name}</span>
+                          <span className="shrink-0 font-mono text-xs">
+                            {meters != null ? (meters >= 1000 ? `${(meters / 1000).toFixed(1)} km` : `${meters} m`) : "—"}
+                            {isGlobalClosest ? ` · ${t(locale, "closest")}` : ""}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </Sheet>
 
       {/* Shift Summary & Recorded Intervals Card */}
       <ShiftSummaryCard
@@ -701,7 +749,7 @@ function HomeTab({
             <div className="flex justify-between">
               <span className="text-muted">{t(locale, "eventType")}</span>
               <span className="font-medium text-fg">
-                {home.isCheckedIn ? t(locale, "checkOut") : t(locale, "checkIn")}
+                {plan.type === "check_out" ? t(locale, "checkOut") : t(locale, "checkIn")}
               </span>
             </div>
             <div className="flex justify-between">
@@ -741,7 +789,7 @@ function HomeTab({
             <Button
               type="button"
               className="flex-1 text-xs"
-              onClick={handleReviewSubmit}
+              onClick={() => void handleReviewSubmit()}
               disabled={submittingReview || reviewReason.trim().length < 5}
             >
               {submittingReview ? t(locale, "submitting") : t(locale, "submitReviewRequest")}

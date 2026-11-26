@@ -1,32 +1,32 @@
 import { Button } from "@/components/ui/button";
 import { type Locale, t } from "@/lib/i18n";
 import { LogIn, LogOut, Loader2 } from "lucide-react";
-import type { GpsAdvisoryState } from "./location-status-card";
+import type { PunchPlan } from "@/lib/punch-plan";
 
 export function PrimaryPunchControl({
   locale,
   isCheckedIn,
   isPending,
   disabled,
-  advisoryState,
+  mode,
   onPunch,
 }: {
   locale: Locale;
   isCheckedIn: boolean;
   isPending: boolean;
   disabled: boolean;
-  advisoryState: GpsAdvisoryState;
+  mode: PunchPlan["mode"];
   onPunch: () => void;
 }) {
-  const isIndoorReview = advisoryState === "indoor_review";
+  const isPendingMode = mode === "pending";
   const Icon = isCheckedIn ? LogOut : LogIn;
 
   // Visual button styling based on state
   let buttonVariant = "bg-primary text-primary-foreground hover:bg-primary/90";
-  if (isCheckedIn) {
-    buttonVariant = "bg-rose-600 text-white hover:bg-rose-700 active:bg-rose-800";
-  } else if (isIndoorReview && !disabled) {
+  if (isPendingMode) {
     buttonVariant = "bg-amber-600 text-white hover:bg-amber-700 active:bg-amber-800";
+  } else if (isCheckedIn) {
+    buttonVariant = "bg-rose-600 text-white hover:bg-rose-700 active:bg-rose-800";
   }
 
   const label = isPending ? (
@@ -34,15 +34,17 @@ export function PrimaryPunchControl({
       <Loader2 className="size-5 animate-spin" />
       <span>…</span>
     </span>
+  ) : mode === "waiting" ? (
+    <span>{t(locale, "punchWaitingBtn")}</span>
+  ) : isPendingMode ? (
+    <span className="flex items-center gap-2">
+      <Icon className="size-5" />
+      <span>{t(locale, isCheckedIn ? "punchSendOutBtn" : "punchSendInBtn")}</span>
+    </span>
   ) : isCheckedIn ? (
     <span className="flex items-center gap-2">
       <Icon className="size-5" />
       <span>{t(locale, "checkOut")}</span>
-    </span>
-  ) : isIndoorReview ? (
-    <span className="flex items-center gap-2">
-      <Icon className="size-5" />
-      <span>{t(locale, "punchPendingReviewBtn")}</span>
     </span>
   ) : (
     <span className="flex items-center gap-2">
